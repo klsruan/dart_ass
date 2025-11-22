@@ -1,6 +1,6 @@
 name: dart_ass
 description: Advanced ASS Subtitle Reader & Editor for Dart
-version: 1.0.6
+version: 1.0.7
 repository: https://github.com/klsruan/dart_ass
 
 environment:

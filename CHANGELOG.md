@@ -26,3 +26,7 @@
 
 - Fix binaries struct
 
+## 1.0.7
+
+- Fix binaries path
+
