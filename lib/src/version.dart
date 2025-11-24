@@ -1,0 +1,1 @@
+String dartAssVersion = '1.2.0';
