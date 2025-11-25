@@ -413,32 +413,29 @@ class AssFont {
   }
 
   void setSize(double? newFontSize, {bool fromInit = false}) {
-    if (done || fromInit) {
-      scaleX = scx!;
-      scaleY = scy!;
-      if (newFontSize != null) {
-        // limits font size to 100 using scale 0 <--> 1
-        if (newFontSize > 100) {
-          double factor = (newFontSize - 100) / 100;
-          scaleX += scaleX * factor;
-          scaleY += scaleY * factor;
-          fontSize = 100;
-        }
-        scaleX /= 100;
-        scaleY /= 100;
-        setFontMetrics(freeType!, face!.value);
-        assFaceSetSize(freeType!, face!.value, fontSize);
-        AscDesc ascDesc = assFontGetAscDesc(freeType!, face!.value);
-        ascender = ascDesc.asc / UPSCALE;
-        descender = ascDesc.desc / UPSCALE;
-        if (ascender != null && descender != null) {
-          height = ascender! + descender!;
-        }
-        weight = assFaceGetWeight(freeType!, face!.value);
-      }
-    } else {
-      print('call method init fist');
+    if (!done && !fromInit) {
+      print('call method init first');
+      return;
     }
+    if (newFontSize == null) return;
+    scaleX = scx!;
+    scaleY = scy!;
+    fontSize = newFontSize;
+    if (fontSize > 100) {
+      double factor = (fontSize - 100) / 100;
+      scaleX += scaleX * factor;
+      scaleY += scaleY * factor;
+      fontSize = 100;
+    }
+    scaleX /= 100;
+    scaleY /= 100;
+    setFontMetrics(freeType!, face!.value);
+    assFaceSetSize(freeType!, face!.value, fontSize);
+    AscDesc ascDesc = assFontGetAscDesc(freeType!, face!.value);
+    ascender = ascDesc.asc / UPSCALE;
+    descender = ascDesc.desc / UPSCALE;
+    height = ascender! + descender!;
+    weight = assFaceGetWeight(freeType!, face!.value);
   }
 
   AssFontMetrics? metrics() {
