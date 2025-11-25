@@ -400,7 +400,7 @@ class AssFont {
     } else if (err == 1) {
       print("Font file is missing or corrupted");
     }
-    setSize(null);
+    setSize(fontSize);
 
     done = true;
   }
