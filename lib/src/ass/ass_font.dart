@@ -408,16 +408,16 @@ class AssFont {
   void setSize(double? newFontSize) {
     if (newFontSize != null) {
       // limits font size to 100 using scale 0 <--> 1
-      if (fontSize > 100) {
-        double factor = (fontSize - 100) / 100;
+      if (newFontSize > 100) {
+        double factor = (newFontSize - 100) / 100;
         scaleX += scaleX * factor;
         scaleY += scaleY * factor;
-        fontSize = 100;
+        newFontSize = 100;
       }
       scaleX /= 100;
       scaleY /= 100;
       setFontMetrics(freeType!, face!.value);
-      assFaceSetSize(freeType!, face!.value, fontSize);
+      assFaceSetSize(freeType!, face!.value, newFontSize);
       AscDesc ascDesc = assFontGetAscDesc(freeType!, face!.value);
       ascender = ascDesc.asc / UPSCALE;
       descender = ascDesc.desc / UPSCALE;
