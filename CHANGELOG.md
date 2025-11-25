@@ -42,3 +42,7 @@
 
 - Add support for converting text to Ass Drawings and SVG.
 
+## 1.2.2
+
+- Fix inconsistency when the style is bold or italic.
+

@@ -3,10 +3,10 @@ import 'package:dart_ass/dart_ass.dart';
 void main() async {
   AssFont assFont = AssFont(
     styleName: 'Default',
-    fontName: 'Bahnschrift',
+    fontName: 'Arial',
     fontSize: 50,
-    bold: false,
-    italic: true,
+    bold: true,
+    italic: false,
     underline: true,
     strikeOut: true,
     scaleX: 100,

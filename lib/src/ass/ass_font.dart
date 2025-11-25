@@ -191,7 +191,7 @@ String assGetGlyphOutline(
   }
   final dir = ft.FT_Outline_Get_Orientation(sourcePtr);
   final iy = dir == FT_Orientation_.FT_ORIENTATION_TRUETYPE ? 0 : 1;
-  String path = '';
+  String path = ' ';
   if (underline != null) {
     final y1 = underline[iy == 0 ? 1 : 0];
     final y2 = underline[iy == 0 ? 0 : 1];
@@ -358,6 +358,7 @@ class AssFont {
   FreetypeBinding? freeType;
   Pointer<Pointer<FT_LibraryRec_>>? library;
   Pointer<Pointer<FT_FaceRec_>>? face;
+  FontCollector? fontCollector;
 
   double? ascender;
   double? descender;
@@ -389,7 +390,8 @@ class AssFont {
       print('err on Init FreeType');
     }
 
-    String? fontPath = await FontCollector(fontName: fontName).getFontPath();
+    fontCollector = FontCollector(fontName: fontName, bold: bold, italic: italic);
+    String? fontPath = await fontCollector!.getFontPath();
 
     face = calloc<FT_Face>();
     err = freeType!.FT_New_Face(library!.value, fontPath!.asCharP(), 0, face!);
@@ -459,6 +461,12 @@ class AssFont {
           continue;
         }
         Pointer<FT_GlyphSlotRec_> glyphSlot = face!.value.ref.glyph;
+        if (bold && weight! < 700 && !fontCollector!.resolvedBold) {
+          assGlyphEmbolden(freeType!, glyphSlot);
+        }
+        if (italic && !fontCollector!.resolvedItalic) {
+          assGlyphItalicize(freeType!, glyphSlot);
+        }
         callback(glyphSlot);
       }
     } else {

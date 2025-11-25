@@ -1,1 +1,1 @@
-String dartAssVersion = '1.2.0';
+String dartAssVersion = '1.2.2';
