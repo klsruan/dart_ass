@@ -400,29 +400,32 @@ class AssFont {
     } else if (err == 1) {
       print("Font file is missing or corrupted");
     }
+    setSize(null);
 
-    // limits font size to 100 using scale 0 <--> 1
-    if (fontSize > 100) {
-      double factor = (fontSize - 100) / 100;
-      scaleX += scaleX * factor;
-      scaleY += scaleY * factor;
-      fontSize = 100;
-    }
-    scaleX /= 100;
-    scaleY /= 100;
-
-    setFontMetrics(freeType!, face!.value);
-    assFaceSetSize(freeType!, face!.value, fontSize);
-    AscDesc ascDesc = assFontGetAscDesc(freeType!, face!.value);
-
-    ascender = ascDesc.asc / UPSCALE;
-    descender = ascDesc.desc / UPSCALE;
-    if (ascender != null && descender != null) {
-      height = ascender! + descender!;
-    }
-
-    weight = assFaceGetWeight(freeType!, face!.value);
     done = true;
+  }
+
+  void setSize(double? newFontSize) {
+    if (newFontSize != null) {
+      // limits font size to 100 using scale 0 <--> 1
+      if (fontSize > 100) {
+        double factor = (fontSize - 100) / 100;
+        scaleX += scaleX * factor;
+        scaleY += scaleY * factor;
+        fontSize = 100;
+      }
+      scaleX /= 100;
+      scaleY /= 100;
+      setFontMetrics(freeType!, face!.value);
+      assFaceSetSize(freeType!, face!.value, fontSize);
+      AscDesc ascDesc = assFontGetAscDesc(freeType!, face!.value);
+      ascender = ascDesc.asc / UPSCALE;
+      descender = ascDesc.desc / UPSCALE;
+      if (ascender != null && descender != null) {
+        height = ascender! + descender!;
+      }
+      weight = assFaceGetWeight(freeType!, face!.value);
+    }
   }
 
   AssFontMetrics? metrics() {
