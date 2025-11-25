@@ -404,16 +404,16 @@ class AssFont {
     } else if (err == 1) {
       print("Font file is missing or corrupted");
     }
-    setSize(fontSize);
 
     scx = scaleX;
     scy = scaleY;
+    setSize(fontSize, fromInit: true);
 
     done = true;
   }
 
-  void setSize(double? newFontSize) {
-    if (done) {
+  void setSize(double? newFontSize, {bool fromInit = false}) {
+    if (done || fromInit) {
       scaleX = scx!;
       scaleY = scy!;
       if (newFontSize != null) {
