@@ -11,6 +11,7 @@ export 'src/ass/ass_text.dart';
 export 'src/ass/ass_line.dart';
 export 'src/ass/ass_tags.dart';
 export 'src/ass/ass_struct.dart';
+export 'src/ass/ass_path.dart';
 export 'src/ass/ass.dart';
 export 'src/version.dart';
 

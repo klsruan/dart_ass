@@ -38,3 +38,7 @@
 
 - Fix ass font
 
+## 1.2.1
+
+- Add support for converting text to Ass Drawings and SVG.
+
