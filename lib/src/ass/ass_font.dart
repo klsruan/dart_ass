@@ -355,6 +355,10 @@ class AssFont {
   double scaleY;
   double spacing;
 
+  // save old state
+  double? scx;
+  double? scy;
+
   FreetypeBinding? freeType;
   Pointer<Pointer<FT_LibraryRec_>>? library;
   Pointer<Pointer<FT_FaceRec_>>? face;
@@ -402,29 +406,38 @@ class AssFont {
     }
     setSize(fontSize);
 
+    scx = scaleX;
+    scy = scaleY;
+
     done = true;
   }
 
   void setSize(double? newFontSize) {
-    if (newFontSize != null) {
-      // limits font size to 100 using scale 0 <--> 1
-      if (newFontSize > 100) {
-        double factor = (newFontSize - 100) / 100;
-        scaleX += scaleX * factor;
-        scaleY += scaleY * factor;
-        newFontSize = 100;
+    if (done) {
+      scaleX = scx!;
+      scaleY = scy!;
+      if (newFontSize != null) {
+        // limits font size to 100 using scale 0 <--> 1
+        if (newFontSize > 100) {
+          double factor = (newFontSize - 100) / 100;
+          scaleX += scaleX * factor;
+          scaleY += scaleY * factor;
+          fontSize = 100;
+        }
+        scaleX /= 100;
+        scaleY /= 100;
+        setFontMetrics(freeType!, face!.value);
+        assFaceSetSize(freeType!, face!.value, fontSize);
+        AscDesc ascDesc = assFontGetAscDesc(freeType!, face!.value);
+        ascender = ascDesc.asc / UPSCALE;
+        descender = ascDesc.desc / UPSCALE;
+        if (ascender != null && descender != null) {
+          height = ascender! + descender!;
+        }
+        weight = assFaceGetWeight(freeType!, face!.value);
       }
-      scaleX /= 100;
-      scaleY /= 100;
-      setFontMetrics(freeType!, face!.value);
-      assFaceSetSize(freeType!, face!.value, newFontSize);
-      AscDesc ascDesc = assFontGetAscDesc(freeType!, face!.value);
-      ascender = ascDesc.asc / UPSCALE;
-      descender = ascDesc.desc / UPSCALE;
-      if (ascender != null && descender != null) {
-        height = ascender! + descender!;
-      }
-      weight = assFaceGetWeight(freeType!, face!.value);
+    } else {
+      print('call method init fist');
     }
   }
 
