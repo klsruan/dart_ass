@@ -8,7 +8,11 @@ environment:
 
 # Add regular dependencies here.
 dependencies:
-  dart_freetype: ^1.1.0
+  # dart_freetype: ^1.1.0
+  dart_freetype:
+    git:
+        url: https://github.com/klsruan/dart_freetype.git
+        ref: 3a12e7b992d9c22e9cd3ab7240e073cfb1cf2a9c
   ffi: ^2.1.4
   path: ^1.9.1
 
