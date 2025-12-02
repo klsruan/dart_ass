@@ -12,7 +12,7 @@ dependencies:
   dart_freetype:
     git:
         url: https://github.com/klsruan/dart_freetype.git
-        ref: 3a12e7b992d9c22e9cd3ab7240e073cfb1cf2a9c
+        ref: 22fe3579cb05ec19dad98655273a6abaf3fcb56d
   ffi: ^2.1.4
   path: ^1.9.1
 
