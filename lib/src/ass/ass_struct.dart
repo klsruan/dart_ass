@@ -211,7 +211,7 @@ class AssDialog {
 
   @override
   String toString() {
-    return "${commented ? 'Comment' : 'Dialogue'}: $layer,${startTime.toString()},${endTime.toString()},$style,$name,${marginL.round()},${marginR.round()},${marginV.round()},$effect,$text";
+    return "${commented ? 'Comment' : 'Dialogue'}: $layer,${startTime.toString()},${endTime.toString()},${style.styleName},$name,${marginL.round()},${marginR.round()},${marginV.round()},$effect,$text";
   }
 }
 
