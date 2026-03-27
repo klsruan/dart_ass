@@ -451,7 +451,7 @@ class AssFont {
         externalLeading: 0,
       );
     } else {
-      print('call method init fist');
+      print('call method init first');
     }
     return null;
   }
@@ -482,7 +482,7 @@ class AssFont {
         callback(glyphSlot);
       }
     } else {
-      print('call method init fist');
+      print('call method init first');
     }
   }
 
@@ -497,7 +497,7 @@ class AssFont {
         height: height! * scaleY,
       );
     } else {
-      print('call method init fist');
+      print('call method init first');
     }
     return null;
   }
@@ -579,7 +579,7 @@ class AssFont {
       });
       return paths.join(" ");
     } else {
-      print('call method init fist');
+      print('call method init first');
     }
     return null;
   }
@@ -670,7 +670,7 @@ class AssFont {
       buffer.writeln('</svg>');
       return buffer.toString();
     } else {
-      print('call method init fist');
+      print('call method init first');
     }
     return null;
   }

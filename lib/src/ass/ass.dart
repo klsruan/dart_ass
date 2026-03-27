@@ -66,8 +66,7 @@ class Ass {
               playResY: 0,
             );
           }
-          if ((currentSection == 'Aegisub Project Garbage' || currentSection == 'Dart Ass Project Garbage') &&
-              garbage == null) {
+          if (currentSection == 'Dart Ass Project Garbage' && garbage == null) {
             garbage = AssGarbage();
           }
           continue;
@@ -77,7 +76,6 @@ class Ass {
           case 'Script Info':
             _parseScriptInfo(line, titleExp, wrapStyleExp, scaledBorderExp, yCbCrMatrixExp, playResXExp, playResYExp);
             break;
-          case 'Aegisub Project Garbage':
           case 'Dart Ass Project Garbage':
             _parseAegisubGarbage(line, audioFileExp, videoFileExp, videoARValueExp, videoZoomPercentExp, videoZoomPositionExp, activeLineExp);
             break;
@@ -120,7 +118,7 @@ class Ass {
         print('Warning: [Script Info] section not found or incomplete.');
       }
       if (garbage == null) {
-        print('Warning: [Aegisub Project Garbage] section not found or incomplete.');
+        print('Warning: [Dart Ass Project Garbage] section not found or incomplete.');
       }
       if (stylesList.isNotEmpty) {
         styles = AssStyles(styles: stylesList);

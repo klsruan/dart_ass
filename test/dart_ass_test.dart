@@ -191,7 +191,7 @@ void main() {
         expect(header.toString(), contains('Title: T'));
 
         final garbage = AssGarbage(audioFilePath: 'a.mp3', activeLine: 1);
-        expect(garbage.toString(), contains('[Aegisub Project Garbage]'));
+        expect(garbage.toString(), contains('[Dart Ass Project Garbage]'));
 
         final style = AssStyle(
           styleName: 'Default',
@@ -290,7 +290,7 @@ YCbCr Matrix: TV.709
 PlayResX: 1920
 PlayResY: 1080
 
-[Aegisub Project Garbage]
+[Dart Ass Project Garbage]
 Audio File: audio.wav
 Active Line: 3
 

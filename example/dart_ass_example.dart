@@ -4,7 +4,7 @@ void main() async {
   AssFont assFont = AssFont(
     styleName: 'Default',
     fontName: 'Arial',
-    fontSize: 50,
+    fontSize: 20,
     bold: true,
     italic: false,
     underline: true,
@@ -14,12 +14,12 @@ void main() async {
     spacing: 10,
   );
   await assFont.init();
-  String? shape = assFont.getTextToShape('SAMPLE TEXT');
-  if (shape != null) {
-    print(shape);
-  }
-  // String? svg = assFont.getTextToSvg('SAMPLE TEXT');
-  // if (svg != null) {
-  //   print(svg);
+  // String? shape = assFont.getTextToShape('SAMPLE TEXT');
+  // if (shape != null) {
+  //   print(shape);
   // }
+  String? svg = assFont.getTextToSvg('SAMPLE TEXT');
+  if (svg != null) {
+    print(svg);
+  }
 }

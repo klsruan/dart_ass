@@ -55,7 +55,7 @@ class AssGarbage {
   @override
   String toString() {
     StringBuffer bff = StringBuffer();
-    bff.writeln("[Aegisub Project Garbage]");
+    bff.writeln("[Dart Ass Project Garbage]");
     if (audioFilePath != null) {
       bff.writeln("Audio File: $audioFilePath");
     }
