@@ -148,8 +148,12 @@ class AssOverrideTags {
       final entryTag = _assTagEntries[i].tag.toLowerCase();
       if (entryTag.startsWith(t)) {
         final full = _assTagEntries[i].tag;
-        if (full.length <= tag.length) return '';
-        return full.substring(tag.length).trim();
+        if (full.length > tag.length) {
+          return full.substring(tag.length).trim();
+        }
+        final v = _assTagEntries[i].value;
+        if (v == null) return '';
+        return v.toString().trim();
       }
     }
     return null;

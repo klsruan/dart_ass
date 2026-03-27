@@ -66,7 +66,8 @@ class Ass {
               playResY: 0,
             );
           }
-          if (currentSection == 'Aegisub Project Garbage' && garbage == null) {
+          if ((currentSection == 'Aegisub Project Garbage' || currentSection == 'Dart Ass Project Garbage') &&
+              garbage == null) {
             garbage = AssGarbage();
           }
           continue;
@@ -77,6 +78,7 @@ class Ass {
             _parseScriptInfo(line, titleExp, wrapStyleExp, scaledBorderExp, yCbCrMatrixExp, playResXExp, playResYExp);
             break;
           case 'Aegisub Project Garbage':
+          case 'Dart Ass Project Garbage':
             _parseAegisubGarbage(line, audioFileExp, videoFileExp, videoARValueExp, videoZoomPercentExp, videoZoomPositionExp, activeLineExp);
             break;
           case 'V4+ Styles':

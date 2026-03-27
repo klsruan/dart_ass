@@ -19,7 +19,7 @@ Add this to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  dart_ass: ^1.0.1
+  dart_ass: ^1.2.2
 ```
 
 ## 📚 Usage
@@ -53,3 +53,11 @@ A complete working example is available in the [`/example`](example/) directory.
 - Learn about ASS format: https://docs.aegisub.org/3.2/ASS_Tags/
 - Feel free to open issues or submit pull requests for improvements.
 - Built with extensibility in mind, suitable for editors and players.
+
+## 📄 License
+
+This project is licensed under the MIT License (see `LICENSE`).
+
+## 🧾 Changelog
+
+See `CHANGELOG.md`.

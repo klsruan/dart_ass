@@ -1,10 +1,9 @@
 import 'dart:ffi';
 import 'package:dart_ass/dart_ass.dart';
+import 'package:dart_freetype/dart_freetype_ffi.dart';
 import 'package:ffi/ffi.dart';
 
 import '../font_collector.dart';
-import 'package:dart_freetype/dart_freetype.dart';
-
 // ignore: constant_identifier_names
 const int UPSCALE = 64;
 // ignore: constant_identifier_names
