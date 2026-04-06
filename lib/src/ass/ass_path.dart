@@ -1,12 +1,23 @@
+/// Parsing and manipulation of ASS vector drawing commands (`\p` / clip vectors).
+///
+/// ASS drawings are sequences like `m 0 0 l 10 0 10 10 ...`.
+/// This module parses them into points/paths and supports moving them.
+bool _isWhitespaceCodeUnit(int cu) => cu <= 32;
+
+bool _isAlphaCodeUnit(int cu) {
+  // A-Z or a-z
+  return (cu >= 65 && cu <= 90) || (cu >= 97 && cu <= 122);
+}
+
 AssPoint? getPoint(String p, {required int refIndex}) {
   int index = refIndex;
 
-  while (index < p.length && p[index].trim().isEmpty) {
+  while (index < p.length && _isWhitespaceCodeUnit(p.codeUnitAt(index))) {
     index++;
   }
 
   String xStr = '';
-  while (index < p.length && p[index].trim().isNotEmpty && p[index] != ' ') {
+  while (index < p.length && !_isWhitespaceCodeUnit(p.codeUnitAt(index))) {
     xStr += p[index];
     index++;
   }
@@ -19,12 +30,12 @@ AssPoint? getPoint(String p, {required int refIndex}) {
     return null;
   }
 
-  while (index < p.length && p[index].trim().isEmpty) {
+  while (index < p.length && _isWhitespaceCodeUnit(p.codeUnitAt(index))) {
     index++;
   }
 
   String yStr = '';
-  while (index < p.length && p[index].trim().isNotEmpty && p[index] != ' ') {
+  while (index < p.length && !_isWhitespaceCodeUnit(p.codeUnitAt(index))) {
     yStr += p[index];
     index++;
   }
@@ -60,11 +71,11 @@ int addManyPoints(String p, AssPath currentPath, String cmd, int startIndex, int
       break;
     }
 
-    while (index < p.length && p[index].trim().isEmpty) {
+    while (index < p.length && _isWhitespaceCodeUnit(p.codeUnitAt(index))) {
       index++;
     }
 
-    if (index < p.length && RegExp(r'[a-z]').hasMatch(p[index])) {
+    if (index < p.length && _isAlphaCodeUnit(p.codeUnitAt(index))) {
       break;
     }
   }
@@ -87,10 +98,72 @@ bool addNPoints(String p, AssPath currentPath, String cmd, int startIndex, int n
   return true;
 }
 
+int addRepeatedTriples(String p, AssPath currentPath, String cmd, int startIndex) {
+  int index = startIndex;
+  int addedPoints = 0;
+  while (true) {
+    while (index < p.length && _isWhitespaceCodeUnit(p.codeUnitAt(index))) {
+      index++;
+    }
+    if (index >= p.length) break;
+    if (_isAlphaCodeUnit(p.codeUnitAt(index))) break;
+
+    final ok = addNPoints(p, currentPath, cmd, index, 3);
+    if (!ok) break;
+    addedPoints += 3;
+    index = currentPath.lastIndex;
+  }
+  currentPath.lastIndex = index;
+  return addedPoints;
+}
+
 class AssPaths {
   List<AssPath> paths;
 
   AssPaths({required this.paths});
+
+  AssPaths clone() => AssPaths(paths: paths.map((p) => p.clone()).toList(growable: true));
+
+  /// Reallocates this shape according to an ASS alignment (`\an`) and an optional target point.
+  ///
+  /// This is a pragmatic helper useful for automation:
+  /// - when [reverse] is false (default), it moves the shape so its alignment anchor
+  ///   (based on its bounding box) becomes `(x,y)`.
+  /// - when [reverse] is true, it performs the opposite move (useful when undoing a
+  ///   previous reallocation).
+  ///
+  /// This mirrors the conceptual behavior of many ASS tooling scripts, but this
+  /// implementation is intentionally lightweight (bounding-box based).
+  void reallocate(
+    int an, {
+    bool reverse = false,
+    double x = 0,
+    double y = 0,
+    AssBoundingBox? box,
+  }) {
+    final bb = box ?? boundingBox();
+    final w = bb.width;
+    final h = bb.height;
+
+    final double tx = switch (an) {
+      1 || 4 || 7 => 0.0,
+      2 || 5 || 8 => 0.5,
+      3 || 6 || 9 => 1.0,
+      _ => 0.5,
+    };
+    final double ty = switch (an) {
+      7 || 8 || 9 => 0.0,
+      4 || 5 || 6 => 0.5,
+      1 || 2 || 3 => 1.0,
+      _ => 1.0,
+    };
+
+    if (!reverse) {
+      move(x - (w * tx), y - (h * ty));
+    } else {
+      move(-x + (w * tx), -y + (h * ty));
+    }
+  }
 
   static AssPaths? parse(String drawingCommands) {
     String p = drawingCommands;
@@ -102,7 +175,7 @@ class AssPaths {
     AssPoint? splineStart;
 
     while (index < p.length) {
-      while (index < p.length && p[index].trim().isEmpty) {
+      while (index < p.length && _isWhitespaceCodeUnit(p.codeUnitAt(index))) {
         index++;
       }
 
@@ -110,10 +183,10 @@ class AssPaths {
         break;
       }
 
-      String cmd = p[index];
+      String cmd = p[index].toLowerCase();
       index++;
 
-      while (index < p.length && p[index].trim().isEmpty) {
+      while (index < p.length && _isWhitespaceCodeUnit(p.codeUnitAt(index))) {
         index++;
       }
 
@@ -159,7 +232,8 @@ class AssPaths {
           if (currentPath == null) {
             continue;
           }
-          points += addManyPoints(p, currentPath, 'b', index, 3);
+          // `b` consumes points in groups of 3 and may repeat without repeating the command.
+          points += addRepeatedTriples(p, currentPath, 'b', index);
           index = currentPath.lastIndex;
           break;
         case 's':
@@ -167,12 +241,12 @@ class AssPaths {
             continue;
           }
           splineStart = currentPath.path.isNotEmpty ? currentPath.path.last : null;
-          bool success = addNPoints(p, currentPath, 's', index, 3);
-          if (!success) {
+          final added = addRepeatedTriples(p, currentPath, 's', index);
+          if (added == 0) {
             splineStart = null;
             break;
           }
-          points += 3;
+          points += added;
           index = currentPath.lastIndex;
           continue;
         case 'p':
@@ -209,6 +283,45 @@ class AssPaths {
     }
   }
 
+  /// Applies a point-mapping function to all points.
+  ///
+  /// The mapper receives the current `(x,y)` and returns the new `(x,y)`.
+  void mapPoints((double, double) Function(double x, double y) mapper) {
+    for (final path in paths) {
+      for (final p in path.path) {
+        final (nx, ny) = mapper(p.x, p.y);
+        p.x = nx;
+        p.y = ny;
+      }
+    }
+  }
+
+  /// Returns the bounding box of all points.
+  ///
+  /// If there are no points, returns a zero-size box at (0,0).
+  AssBoundingBox boundingBox() {
+    double? minX;
+    double? minY;
+    double? maxX;
+    double? maxY;
+
+    for (final path in paths) {
+      for (final p in path.path) {
+        minX = minX == null ? p.x : (p.x < minX ? p.x : minX);
+        minY = minY == null ? p.y : (p.y < minY ? p.y : minY);
+        maxX = maxX == null ? p.x : (p.x > maxX ? p.x : maxX);
+        maxY = maxY == null ? p.y : (p.y > maxY ? p.y : maxY);
+      }
+    }
+
+    return AssBoundingBox(
+      left: minX ?? 0,
+      top: minY ?? 0,
+      right: maxX ?? 0,
+      bottom: maxY ?? 0,
+    );
+  }
+
   @override
   String toString() {
     StringBuffer bff = StringBuffer();
@@ -219,11 +332,33 @@ class AssPaths {
   }
 }
 
+class AssBoundingBox {
+  final double left;
+  final double top;
+  final double right;
+  final double bottom;
+
+  const AssBoundingBox({
+    required this.left,
+    required this.top,
+    required this.right,
+    required this.bottom,
+  });
+
+  double get width => right - left;
+  double get height => bottom - top;
+
+  @override
+  String toString() => 'AssBoundingBox(left=$left, top=$top, right=$right, bottom=$bottom)';
+}
+
 class AssPath {
   List<AssPoint> path;
   int lastIndex = 0;
 
   AssPath({required this.path});
+
+  AssPath clone() => AssPath(path: path.map((p) => p.clone()).toList(growable: true));
 
   void move(double? px, double? py) {
     for (AssPoint point in path) {
@@ -231,12 +366,38 @@ class AssPath {
     }
   }
 
+  /// Returns whether this contour is oriented clockwise.
+  ///
+  /// This follows the same sign convention used in many ASS shape toolchains.
+  bool isClockWise() {
+    if (path.length < 3) return false;
+    double sum = 0;
+    for (int i = 0; i < path.length; i++) {
+      final curr = path[i];
+      final next = path[(i + 1) % path.length];
+      sum += (next.x - curr.x) * (next.y + curr.y);
+    }
+    return sum < 0;
+  }
+
+  /// Ensures the contour is closed by repeating the first point at the end (as a line).
+  void close() {
+    if (path.length < 2) return;
+    final first = path.first;
+    final last = path.last;
+    if (first.x == last.x && first.y == last.y) return;
+    path.add(AssPoint(x: first.x, y: first.y, code: 'l'));
+  }
+
   @override
   String toString() {
     StringBuffer bff = StringBuffer();
+    String? lastCmd;
     for (AssPoint point in path) {
-      if (point.code != null) {
-        bff.write('${point.code} ');
+      final cmd = point.code;
+      if (cmd != null && cmd != lastCmd) {
+        bff.write('$cmd ');
+        lastCmd = cmd;
       }
       bff.write('${point.x} ${point.y} ');
     }
@@ -251,6 +412,8 @@ class AssPoint {
   int index = 0;
 
   AssPoint({required this.x, required this.y, this.code});
+
+  AssPoint clone() => AssPoint(x: x, y: y, code: code);
 
   void move(double? px, double? py) {
     x += px ?? 0;

@@ -1,3 +1,6 @@
+/// Time helpers for ASS.
+///
+/// ASS uses the format `H:MM:SS.ss` (hundredths of a second).
 String convertMillisecondsToAssTime(int ms) {
   if (ms < 0) {
     throw FormatException("The millisecond value must be non-negative.");
@@ -26,6 +29,7 @@ int convertAssTimeToMilliseconds(String time) {
 }
 
 class AssTime {
+  /// Time in milliseconds.
   int? time;
 
   AssTime({this.time});

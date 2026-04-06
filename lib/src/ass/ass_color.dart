@@ -1,3 +1,10 @@
+/// Color utilities for ASS.
+///
+/// ASS colors are commonly expressed as `&HBBGGRR&` (BGR order) and may also be
+/// embedded with alpha in an 8-hex-digit form.
+///
+/// This module provides conversions to/from RGB components and a small
+/// structured type ([AssColor]).
 List<int> assColorToRGB(String hexColor) {
   if (hexColor.toUpperCase().trim().startsWith('&H') && hexColor.toUpperCase().trim().endsWith('&')) {
     hexColor = hexColor.substring(2, hexColor.length - 1);

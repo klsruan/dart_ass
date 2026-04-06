@@ -6,6 +6,16 @@ import 'ass/ass_struct.dart';
 import 'ass/ass_text.dart';
 import 'ass/ass_time.dart';
 
+/// Utility conversions between SRT and ASS.
+///
+/// These helpers are intentionally simple:
+/// - They do not try to preserve all styling from SRT
+/// - They escape `{` and `}` and convert newlines to `\N`
+/// - They create a single default style
+///
+/// For complex conversions, prefer working directly with [Ass] and customizing
+/// [AssStyle]/tags yourself.
+///
 /// Converts SRT content to an [Ass] object using the library structures.
 Ass convertSrtToAss(
   String srtContent, {

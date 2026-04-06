@@ -5,14 +5,17 @@ repository: https://github.com/klsruan/dart_ass
 
 environment:
   sdk: ^3.8.1
+  flutter: ">=3.0.0"
 
 # Add regular dependencies here.
 dependencies:
-  # dart_freetype: ^1.1.0
+  flutter:
+    sdk: flutter
+  # Required for text metrics and shape conversion.
   dart_freetype:
     git:
-        url: https://github.com/klsruan/dart_freetype.git
-        ref: b11c9cd41a9a84ddc9ecdd2c75c92df1540bdeb5
+      url: https://github.com/klsruan/dart_freetype.git
+      ref: b11c9cd41a9a84ddc9ecdd2c75c92df1540bdeb5
   ffi: ^2.1.4
   path: ^1.9.1
 

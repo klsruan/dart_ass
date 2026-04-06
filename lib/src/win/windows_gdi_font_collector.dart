@@ -1,12 +1,19 @@
 import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
+// ignore: constant_identifier_names
 const int DEFAULT_CHARSET = 1;
+// ignore: constant_identifier_names
 const int HKEY_LOCAL_MACHINE = 0x80000002;
+// ignore: constant_identifier_names
 const int KEY_READ = 0x20019;
+// ignore: constant_identifier_names
 const int ERROR_SUCCESS = 0;
+// ignore: constant_identifier_names
 const int FONTTYPE_RASTER = 0x1;
+// ignore: constant_identifier_names
 const int FONTTYPE_DEVICE = 0x2;
+// ignore: constant_identifier_names
 const int FONTTYPE_TRUETYPE = 0x4;
 
 base class LOGFONTW extends Struct {
@@ -52,6 +59,7 @@ String utf16PtrToString(Pointer<Uint16> ptr) {
   final list = <int>[];
   int offset = 0;
   while (true) {
+    // ignore: deprecated_member_use
     final v = ptr.elementAt(offset).value;
     if (v == 0) break;
     list.add(v);
@@ -132,10 +140,12 @@ class WindowsGdiFontCollector {
   final DynamicLibrary gdi32 = DynamicLibrary.open("gdi32.dll");
   final DynamicLibrary advapi32 = DynamicLibrary.open("advapi32.dll");
 
+  // ignore: non_constant_identifier_names
   late final int Function(int) CreateCompatibleDC =
       gdi32.lookupFunction<IntPtr Function(IntPtr), int Function(int)>(
           "CreateCompatibleDC");
 
+  // ignore: non_constant_identifier_names
   late final int Function(int) DeleteDC =
       gdi32.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
           "DeleteDC");
@@ -146,6 +156,7 @@ class WindowsGdiFontCollector {
     Pointer<NativeFunction<EnumFontProcNative>>,
     int,
     int,
+  // ignore: non_constant_identifier_names
   ) EnumFontFamiliesExW =
       gdi32.lookupFunction<
           Int32 Function(IntPtr, Pointer<LOGFONTW>,
@@ -163,6 +174,7 @@ class WindowsGdiFontCollector {
     int,
     int,
     Pointer<IntPtr>,
+  // ignore: non_constant_identifier_names
   ) RegOpenKeyExW =
       advapi32.lookupFunction<
           Uint32 Function(IntPtr, Pointer<Utf16>, Uint32, Uint32,
@@ -179,6 +191,7 @@ class WindowsGdiFontCollector {
     Pointer<Uint32>,
     Pointer<Uint8>,
     Pointer<Uint32>,
+  // ignore: non_constant_identifier_names
   ) RegEnumValueW =
       advapi32.lookupFunction<
           Uint32 Function(IntPtr, Uint32, Pointer<Utf16>, Pointer<Uint32>,
@@ -194,6 +207,7 @@ class WindowsGdiFontCollector {
               Pointer<Uint8>,
               Pointer<Uint32>)>("RegEnumValueW");
 
+  // ignore: non_constant_identifier_names
   late final int Function(int) RegCloseKey =
       advapi32.lookupFunction<Uint32 Function(IntPtr), int Function(int)>(
           "RegCloseKey");
@@ -271,7 +285,7 @@ class WindowsGdiFontCollector {
         if (f.file != null) continue;
         if (f.name == cleaned ||
             f.longName == cleaned ||
-            "${cleaned} ${f.style}" == f.name) {
+            "$cleaned ${f.style}" == f.name) {
           f.file = fileName;
         }
       }

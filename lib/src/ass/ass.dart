@@ -7,6 +7,15 @@ import 'ass_text.dart';
 import 'ass_struct.dart';
 import '../version.dart';
 
+/// An in-memory representation of an Advanced SubStation Alpha (`.ass`) file.
+///
+/// Use [parse] to load and parse a file, then mutate [dialogs], [styles], etc,
+/// and finally call `toFile(...)` to persist changes back to disk.
+///
+/// This parser is designed to be tolerant and focuses on the major sections:
+/// - `[Script Info]` → [AssHeader]
+/// - `[V4+ Styles]` → [AssStyles]
+/// - `[Events]` → [AssDialogs]
 class Ass {
   String filePath;
 
@@ -50,6 +59,9 @@ class Ass {
     try {
       for (String line in lines) {
         line = line.trim();
+        if (line.startsWith('\uFEFF')) {
+          line = line.substring(1);
+        }
         if (line.isEmpty || line.startsWith(';')) {
           continue;
         }
@@ -77,7 +89,7 @@ class Ass {
             _parseScriptInfo(line, titleExp, wrapStyleExp, scaledBorderExp, yCbCrMatrixExp, playResXExp, playResYExp);
             break;
           case 'Dart Ass Project Garbage':
-            _parseAegisubGarbage(line, audioFileExp, videoFileExp, videoARValueExp, videoZoomPercentExp, videoZoomPositionExp, activeLineExp);
+            _parseGarbage(line, audioFileExp, videoFileExp, videoARValueExp, videoZoomPercentExp, videoZoomPositionExp, activeLineExp);
             break;
           case 'V4+ Styles':
             if (!stylesHeaderParsed) {
@@ -180,7 +192,7 @@ class Ass {
     }
   }
 
-  void _parseAegisubGarbage(
+  void _parseGarbage(
     String line,
     RegExp audioFileExp,
     RegExp videoFileExp,

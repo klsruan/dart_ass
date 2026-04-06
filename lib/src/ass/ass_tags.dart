@@ -1,14 +1,14 @@
 import 'ass_path.dart';
 
+/// Low-level representations of ASS override tags.
+///
+/// Most users should interact with tags via [AssOverrideTags] (in `ass_text.dart`),
+/// but these primitives are useful when you need custom serialization.
 class AssTag {
   final String tag;
   final dynamic value;
 
   AssTag({required this.tag, required this.value});
-
-  void parse() {
-
-  }
 
   @override
   String toString() {
@@ -29,7 +29,9 @@ class AssTag {
 }
 
 class AssTagPosition {
+  /// X coordinate in script pixels.
   final double x;
+  /// Y coordinate in script pixels.
   final double y;
 
   AssTagPosition(this.x, this.y);

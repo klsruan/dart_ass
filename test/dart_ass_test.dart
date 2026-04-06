@@ -136,6 +136,38 @@ void main() {
         expect(t.segments[2].text, '!');
       });
 
+      test('AssOverrideTags.parse supports \\fnFontName without parentheses', () {
+        final tags = AssOverrideTags.parse(r'{\fnC059\b1}');
+        expect(tags, isNotNull);
+        expect(tags!.getTagValue('fn'), equals('C059'));
+        expect(tags.fontName, equals('C059'));
+        expect(tags.bold, isTrue);
+      });
+
+      test('AssOverrideTags.parse supports \\rStyleName without parentheses', () {
+        final tags = AssOverrideTags.parse(r'{\rAltStyle\fnC059\b1}');
+        expect(tags, isNotNull);
+        expect(tags!.getTagValue('r'), equals('AltStyle'));
+        expect(tags.getTagValue('fn'), equals('C059'));
+        expect(tags.bold, isTrue);
+      });
+
+      test('AssOverrideTags.parse keeps karaoke + fn sequence intact', () {
+        final tags = AssOverrideTags.parse(r'{\k36\fnC059\b1}');
+        expect(tags, isNotNull);
+        expect(tags!.getTagValue('k'), equals('36'));
+        expect(tags.getTagValue('fn'), equals('C059'));
+        expect(tags.bold, isTrue);
+      });
+
+      test('AssOverrideTags.parse maps \\K to \\kf (karaoke alias)', () {
+        final tags = AssOverrideTags.parse(r'{\K20}');
+        expect(tags, isNotNull);
+        expect(tags!.getTagValue('kf'), equals('20'));
+        expect(tags.getTagValue('k'), isNull);
+        expect(tags.toString(), contains(r'\kf20'));
+      });
+
       test('AssOverrideTags.parse getters/setters and serialization', () {
         final tags = AssOverrideTags.parse(r'{\b1\i0\fs20\c&H00FFFFFF&\alpha&H80&\pos(10,20)}');
         expect(tags, isNotNull);
@@ -245,6 +277,304 @@ void main() {
         expect(dialogs.toString(), contains('[Events]'));
         await dialogs.extend(false);
         expect(dialog.line, isNotNull);
+      });
+    });
+
+    group('ass_automation.dart', () {
+      test('AssAutomation flow can shift, set tag and remove', () async {
+        final ass = convertSrtToAss(
+          [
+            '1',
+            '00:00:01,000 --> 00:00:02,000',
+            'Hello',
+            '',
+            '2',
+            '00:00:03,000 --> 00:00:04,000',
+            'World',
+            '',
+          ].join('\n'),
+        );
+
+        // Seleciona tudo, muda tempo e seta uma tag no bloco inicial.
+        final res1 = await AssAutomation(ass)
+            .flow()
+            .selectAll()
+            .shiftTime(500)
+            .ensureLeadingTags()
+            .setTag('bord', '3')
+            .run();
+
+        expect(res1.dialogsTouched, 2);
+        final d0 = ass.dialogs!.dialogs[0];
+        expect(d0.startTime.time, 1500);
+        expect(d0.text.segments.first.overrideTags, isNotNull);
+        expect(d0.text.segments.first.overrideTags!.borderSize, 3);
+
+        // Remove o segundo dialog.
+        final res2 = await AssAutomation(ass)
+            .flow()
+            .selectAll()
+            .where((_, i) => i == 1)
+            .removeSelected()
+            .run();
+
+        expect(res2.dialogsTouched, 0); // remove não conta como "touched"
+        expect(ass.dialogs!.dialogs.length, 1);
+      });
+
+      test('splitCharsFx supports callback emission', () async {
+        final ass = convertSrtToAss(
+          [
+            '1',
+            '00:00:01,000 --> 00:00:02,000',
+            'Hi',
+            '',
+          ].join('\n'),
+        );
+
+        final res = await AssAutomation(ass)
+            .flow()
+            .selectAll()
+            .splitCharsFx(
+              stepMs: 50,
+              durMs: 200,
+              commentOriginal: true,
+              onCharEnv: (env) {
+                final d = env.unit.defaultDialog;
+                final tags = env.unit.ensureLeadingTags(d);
+                tags.setTag('bord', '2');
+                env.emit.emit(d);
+              },
+            )
+            .run();
+
+        expect(res.dialogsTouched, 1); // original commented
+        // Original + 2 FX lines
+        expect(ass.dialogs!.dialogs.length, 3);
+        expect(ass.dialogs!.dialogs[0].commented, isTrue);
+        expect(ass.dialogs!.dialogs[1].effect, 'fx');
+        expect(ass.dialogs!.dialogs[1].text.getAss(), contains(r'\bord2'));
+      });
+
+      test('splitKaraokeFx does not comment non-karaoke lines by default', () async {
+        final ass = convertSrtToAss(
+          [
+            '1',
+            '00:00:01,000 --> 00:00:02,000',
+            'Hello',
+            '',
+          ].join('\n'),
+        );
+
+        final res = await AssAutomation(ass)
+            .flow()
+            .selectAll()
+            .splitKaraokeFx(commentOriginal: true)
+            .run();
+
+        expect(res.dialogsTouched, 0);
+        expect(ass.dialogs!.dialogs.length, 1);
+        expect(ass.dialogs!.dialogs[0].commented, isFalse);
+      });
+
+      test('splitKaraokeFx callback receives optional metrics when dialog.line is set', () async {
+        final header = AssHeader(
+          title: 'T',
+          wrapStyle: 0,
+          scaledBorderAndShadow: 'yes',
+          yCbCrMatrix: 'TV.709',
+          playResX: 1920,
+          playResY: 1080,
+        );
+        final style = AssStyle(
+          styleName: 'Default',
+          fontName: 'Arial',
+          fontSize: 48,
+          color1: AssColor.parse('FFFFFF'),
+          color2: AssColor.parse('0000FF'),
+          color3: AssColor.parse('000000'),
+          color4: AssColor.parse('000000'),
+          alpha1: AssAlpha.parse('00'),
+          alpha2: AssAlpha.parse('00'),
+          alpha3: AssAlpha.parse('00'),
+          alpha4: AssAlpha.parse('00'),
+          bold: false,
+          italic: false,
+          underline: false,
+          strikeOut: false,
+          scaleX: 100,
+          scaleY: 100,
+          spacing: 0,
+          angle: 0,
+          borderStyle: 1,
+          outline: 2,
+          shadow: 1,
+          alignment: 2,
+          marginL: 10,
+          marginR: 10,
+          marginV: 10,
+          encoding: 1,
+        );
+
+        final t = AssText.parse(r'{\k10}A{\k20}B')!;
+        final dialog = AssDialog(
+          layer: 0,
+          startTime: AssTime(time: 0),
+          endTime: AssTime(time: 1000),
+          styleName: style.styleName,
+          name: '',
+          marginL: 10,
+          marginR: 10,
+          marginV: 10,
+          effect: 'karaoke',
+          text: t,
+          header: header,
+          commented: false,
+          style: style,
+        );
+
+        // Provide "fake" segment metrics.
+        final line = AssLine.parse(t, style)!;
+        line.segments[0].width = 10;
+        line.segments[0].height = 5;
+        line.segments[1].width = 20;
+        line.segments[1].height = 5;
+        dialog.line = line;
+
+        final ass = Ass(filePath: '');
+        ass.header = header;
+        ass.styles = AssStyles(styles: [style]);
+        ass.dialogs = AssDialogs(dialogs: [dialog]);
+
+        int seen = 0;
+        await AssAutomation(ass)
+            .flow()
+            .selectAll()
+            .splitKaraokeFx(
+              commentOriginal: false,
+              onKaraokeEnv: (env) {
+                final unit = env.unit;
+                expect(unit.width, isNotNull);
+                expect(unit.x, isNotNull);
+                if (unit.blockIndex == 0) {
+                  expect(unit.width, 10);
+                  expect(unit.x, 0);
+                }
+                if (unit.blockIndex == 1) {
+                  expect(unit.width, 20);
+                  expect(unit.x, 10);
+                }
+                seen++;
+                env.emit.emit(unit.defaultDialog);
+              },
+            )
+            .run();
+
+        expect(seen, 2);
+      });
+    });
+
+    group('ass_line.dart (FX helpers)', () {
+      AssHeader _header() => AssHeader(
+            title: 'T',
+            wrapStyle: 0,
+            scaledBorderAndShadow: 'yes',
+            yCbCrMatrix: 'TV.709',
+            playResX: 1920,
+            playResY: 1080,
+          );
+
+      AssStyle _style() => AssStyle(
+            styleName: 'Default',
+            fontName: 'Arial',
+            fontSize: 48,
+            color1: AssColor.parse('FFFFFF'),
+            color2: AssColor.parse('0000FF'),
+            color3: AssColor.parse('000000'),
+            color4: AssColor.parse('000000'),
+            alpha1: AssAlpha.parse('00'),
+            alpha2: AssAlpha.parse('00'),
+            alpha3: AssAlpha.parse('00'),
+            alpha4: AssAlpha.parse('00'),
+            bold: false,
+            italic: false,
+            underline: false,
+            strikeOut: false,
+            scaleX: 100,
+            scaleY: 100,
+            spacing: 0,
+            angle: 0,
+            borderStyle: 1,
+            outline: 2,
+            shadow: 1,
+            alignment: 2,
+            marginL: 10,
+            marginR: 10,
+            marginV: 10,
+            encoding: 1,
+          );
+
+      test('AssDialog.toCharFxDialogs generates one line per char', () {
+        final header = _header();
+        final style = _style();
+        final dialog = AssDialog(
+          layer: 1,
+          startTime: AssTime(time: 0),
+          endTime: AssTime(time: 1000),
+          styleName: style.styleName,
+          name: '',
+          marginL: 10,
+          marginR: 10,
+          marginV: 10,
+          effect: 'karaoke',
+          text: AssText.parse(r'{\bord2}Hi')!,
+          header: header,
+          commented: false,
+          style: style,
+        );
+
+        final fx = dialog.toCharFxDialogs(stepMs: 50, durMs: 200, commentOriginal: true);
+        expect(dialog.commented, isTrue);
+        expect(fx.length, 2);
+        expect(fx[0].startTime.time, 0);
+        expect(fx[0].endTime.time, 200);
+        expect(fx[0].effect, 'fx');
+        expect(fx[1].startTime.time, 50);
+        expect(fx[1].endTime.time, 250);
+        // base tags should be kept
+        expect(fx[0].text.getAss(), contains(r'{\bord2}'));
+      });
+
+      test('AssDialog.toKaraokeFxDialogs uses \\k durations', () {
+        final header = _header();
+        final style = _style();
+        final dialog = AssDialog(
+          layer: 1,
+          startTime: AssTime(time: 0),
+          endTime: AssTime(time: 1000),
+          styleName: style.styleName,
+          name: '',
+          marginL: 10,
+          marginR: 10,
+          marginV: 10,
+          effect: 'karaoke',
+          text: AssText.parse(r'{\k10}A{\k20}B')!,
+          header: header,
+          commented: false,
+          style: style,
+        );
+
+        final fx = dialog.toKaraokeFxDialogs(commentOriginal: false);
+        expect(dialog.commented, isFalse);
+        expect(fx.length, 2);
+        expect(fx[0].startTime.time, 0);
+        expect(fx[0].endTime.time, 100);
+        expect(fx[0].text.toString(), 'A');
+        expect(fx[1].startTime.time, 100);
+        expect(fx[1].endTime.time, 300);
+        expect(fx[1].text.toString(), 'B');
+        // Karaoke tags should not be carried over by default
+        expect(fx[0].text.getAss(), isNot(contains(r'\k')));
       });
     });
 

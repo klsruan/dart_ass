@@ -4,6 +4,15 @@ import 'ass_time.dart';
 import 'ass_text.dart';
 import 'ass_line.dart';
 
+/// Structured types for `.ass` sections and records.
+///
+/// This file contains:
+/// - Script header ([AssHeader])
+/// - Aegisub/Dart extra metadata ([AssGarbage])
+/// - Styles ([AssStyle], [AssStyles])
+/// - Events/dialogues ([AssDialog], [AssDialogs])
+///
+/// These classes are used by [Ass] when parsing/serializing `.ass` files.
 class AssHeader {
   String title;
   int wrapStyle;
@@ -36,6 +45,7 @@ class AssHeader {
 }
 
 class AssGarbage {
+  /// Optional editor/project metadata (e.g. Aegisub Project Garbage).
   String? audioFilePath;
   String? videoFilePath;
   String? videoARValue;
@@ -80,6 +90,7 @@ class AssGarbage {
 
 
 class AssStyle {
+  /// A single V4+ style entry.
   String styleName;
   String fontName;
   double fontSize;
@@ -149,6 +160,7 @@ class AssStyle {
 }
 
 class AssStyles {
+  /// Collection of styles with helper lookup.
   List<AssStyle> styles;
 
   AssStyles({required this.styles});
@@ -171,6 +183,7 @@ class AssStyles {
 }
 
 class AssDialog {
+  /// A single Events line (Dialogue/Comment).
   int layer;
   AssTime startTime;
   AssTime endTime;
@@ -216,6 +229,7 @@ class AssDialog {
 }
 
 class AssDialogs {
+  /// Collection of event lines.
   List<AssDialog> dialogs;
 
   AssDialogs({required this.dialogs});

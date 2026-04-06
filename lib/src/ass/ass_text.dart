@@ -2,6 +2,20 @@ import 'ass_color.dart';
 import 'ass_alpha.dart';
 import 'ass_tags.dart';
 
+/// Parsing and serialization of ASS dialogue text and override tags.
+///
+/// The ASS "Text" field is a mix of:
+/// - Plain text
+/// - Override tag blocks: `{\\b1\\fs20...}`
+///
+/// This module parses the input into segments ([AssTextSegment]) where each
+/// segment optionally carries an [AssOverrideTags] instance.
+///
+/// ## Notes
+/// - Tags are generally case-insensitive.
+/// - Karaoke has a special uppercase alias `\K`, which is mapped to `\kf`
+///   (Aegisub treats them as identical).
+/// - This parser is best-effort and aims to be robust for automation use-cases.
 class AssText {
   List<AssTextSegment> segments;
 
@@ -64,7 +78,10 @@ class AssText {
 }
 
 class AssTextSegment {
+  /// Plain segment text (does not include `{...}`).
   String text;
+
+  /// Override tags that apply to this segment (persistent in ASS semantics).
   AssOverrideTags? overrideTags;
 
   AssTextSegment({required this.text, this.overrideTags});
@@ -76,6 +93,16 @@ class AssOverrideTags {
 
   AssOverrideTags();
 
+  /// Parses an override block like `{\\b1\\fs40\\pos(100,200)}`.
+  ///
+  /// Notes about tag-name parsing:
+  /// - Most tags use the pattern `\\name<value>` or `\\name(<value>)`.
+  /// - Some tags may embed a string value directly without parentheses,
+  ///   e.g. `\\fnFontName` and `\\rStyleName`.
+  ///
+  /// This parser special-cases `\\fn` and `\\r` to avoid consuming the value
+  /// into the tag name (e.g. incorrectly treating `\\fnC059` as a tag named
+  /// `fnc`).
   static AssOverrideTags? parse(String entries) {
     if (entries.startsWith('{') && entries.endsWith('}')) {
       entries = entries.substring(1, entries.length - 1);
@@ -92,18 +119,57 @@ class AssOverrideTags {
       index++;
       int tagNameStart = index;
       if (index < entries.length && RegExp(r'[a-zA-Z0-9]').hasMatch(entries[index])) {
-        index++;
-        if (RegExp(r'[0-9]').hasMatch(entries[tagNameStart])) {
-          if (index < entries.length && RegExp(r'[a-zA-Z]').hasMatch(entries[index])) {
-            index++;
+        // ignore: no_leading_underscores_for_local_identifiers
+        bool _isLetter(String ch) => RegExp(r'[a-zA-Z]').hasMatch(ch);
+        // ignore: no_leading_underscores_for_local_identifiers
+        bool _isDigit(String ch) => RegExp(r'[0-9]').hasMatch(ch);
+
+        // Read the whole alnum token (this may include some of the value for tags
+        // like \k17 or \fnFontName when the value is not parenthesized).
+        int tokenEnd = index;
+        while (tokenEnd < entries.length && RegExp(r'[a-zA-Z0-9]').hasMatch(entries[tokenEnd])) {
+          tokenEnd++;
+        }
+        final token = entries.substring(tagNameStart, tokenEnd);
+        index = tokenEnd;
+
+        if (token.isEmpty) continue;
+
+        String rawTagName = '';
+        String initialValue = '';
+
+        if (_isDigit(token[0])) {
+          // Tags like \1c, \2a, ...
+          if (token.length < 2 || !_isLetter(token[1])) return null;
+          rawTagName = token.substring(0, 2);
+          initialValue = token.substring(2);
+        } else {
+          // Special-cases:
+          // - \fnFontName: value can start with letters, so avoid consuming it into the tag name.
+          // - \rStyleName: same (reset style).
+          final tokenLower = token.toLowerCase();
+          if (tokenLower.startsWith('fn') && token.length >= 2) {
+            rawTagName = token.substring(0, 2);
+            initialValue = token.substring(2);
+          } else if (tokenLower.startsWith('r') && token.isNotEmpty) {
+            rawTagName = token.substring(0, 1);
+            initialValue = token.substring(1);
           } else {
-            return null;
+            // Default: tag name is the leading letters, remaining is initial value.
+            int cut = 0;
+            while (cut < token.length && _isLetter(token[cut])) {
+              cut++;
+            }
+            rawTagName = token.substring(0, cut);
+            initialValue = token.substring(cut);
           }
         }
-        while (index < entries.length && RegExp(r'[a-zA-Z0-9]').hasMatch(entries[index])) {
-          index++;
-        }
-        String tagName = entries.substring(tagNameStart, index).toLowerCase();
+
+        // ASS tags are generally case-insensitive, but karaoke uses an *uppercase*
+        // \K tag which is distinct from lowercase \k and is an alias for \kf.
+        //
+        // Aegisub documents \K and \kf as identical.
+        String tagName = rawTagName == 'K' ? 'kf' : rawTagName.toLowerCase();
         String tagValue = '';
         if (index < entries.length && entries[index] == '(') {
           int parenthesesCount = 1;
@@ -117,13 +183,13 @@ class AssOverrideTags {
             }
             index++;
           }
-          tagValue = entries.substring(valueStart, index - 1).trim();
+          tagValue = (initialValue + entries.substring(valueStart, index - 1)).trim();
         } else {
           int valueStart = index;
           while (index < entries.length && entries[index] != '\\') {
             index++;
           }
-          tagValue = entries.substring(valueStart, index).trim();
+          tagValue = (initialValue + entries.substring(valueStart, index)).trim();
         }
         if (tagName == 't') {
           AssTransformation? transformation = AssTransformation.parse('($tagValue)');
@@ -145,12 +211,7 @@ class AssOverrideTags {
   String? getTagValue(String tag) {
     final t = tag.toLowerCase();
     for (int i = _assTagEntries.length - 1; i >= 0; i--) {
-      final entryTag = _assTagEntries[i].tag.toLowerCase();
-      if (entryTag.startsWith(t)) {
-        final full = _assTagEntries[i].tag;
-        if (full.length > tag.length) {
-          return full.substring(tag.length).trim();
-        }
+      if (_assTagEntries[i].tag.toLowerCase() == t) {
         final v = _assTagEntries[i].value;
         if (v == null) return '';
         return v.toString().trim();
@@ -175,16 +236,86 @@ class AssOverrideTags {
 
   /// Sets or updates a tag with the provided value.
   void replaceTag(String tag, dynamic value) {
+    final t = tag.toLowerCase();
+    if (value == null || (value is String && value.trim().isEmpty)) {
+      removeTag(t);
+      return;
+    }
+
+    bool replaced = false;
     for (int i = _assTagEntries.length - 1; i >= 0; i--) {
-      if (_assTagEntries[i].tag == tag.toLowerCase()) {
-        _assTagEntries[i] = AssTag(tag: tag.toLowerCase(), value: value);
+      if (_assTagEntries[i].tag == t) {
+        _assTagEntries[i] = AssTag(tag: t, value: value);
+        replaced = true;
       }
+    }
+    if (!replaced) {
+      _assTagEntries.add(AssTag(tag: t, value: value));
     }
   }
 
   /// Sets or updates a tag with the provided value.
   void setTag(String tag, String value) {
     _assTagEntries.add(AssTag(tag: tag.toLowerCase(), value: value));
+  }
+
+  String _assValueToString(Object? value) {
+    if (value == null) return '';
+    if (value is bool) return value ? '1' : '0';
+    return value.toString();
+  }
+
+  /// Adds a tag entry (append semantics).
+  ///
+  /// `setTag` historically meant "append a tag", not "replace an existing one".
+  /// For clarity in templater-like usage, prefer calling `addTag(...)`.
+  ///
+  /// This accepts any value and converts it to a string using ASS-friendly rules:
+  /// - `null` becomes an empty value (emits `\tag` with no value)
+  /// - `bool` becomes `1`/`0`
+  /// - everything else uses `toString()`
+  void addTag(String tag, Object? value) => setTag(tag, _assValueToString(value));
+
+  // Typed convenience helpers (thin wrappers over the typed getters/setters).
+  //
+  // These exist mainly for templater/automation code, where you want a clear
+  // "set X" call instead of assigning the property directly.
+  void setAlignment(int an) => alignmentCode = an;
+
+  void setPos(AssTagPosition pos) => position = pos;
+
+  void setOrg(AssTagPosition org) => originalPosition = org;
+
+  void setMove(AssMove mv) => move = mv;
+
+  void setClipRect(AssTagClipRect clip, {bool inverse = false}) {
+    if (inverse) {
+      iclipRect = clip;
+    } else {
+      clipRect = clip;
+    }
+  }
+
+  void setClipVect(AssTagClipVect clip, {bool inverse = false}) {
+    if (inverse) {
+      iclipVect = clip;
+    } else {
+      clipVect = clip;
+    }
+  }
+
+  void addTransform(AssTransformation tr) => transformations.add(tr);
+
+  void setFad(int tInMs, int tOutMs) => setTag('fad', '$tInMs,$tOutMs');
+
+  /// Appends a `\t(...)` transform built from typed tags.
+  void addT({
+    int? t1,
+    int? t2,
+    double? accel,
+    required void Function(AssOverrideTags tags) build,
+  }) {
+    transformations.add(AssTransformation.build(t1: t1, t2: t2, accel: accel, build: build));
   }
 
   /// Removes all instances of a specific tag.
@@ -379,9 +510,13 @@ class AssOverrideTags {
 }
 
 class AssTransformation {
+  /// Optional start time (ms) for the `\t(...)` transform.
   int? t1;
+  /// Optional end time (ms) for the `\t(...)` transform.
   int? t2;
+  /// Acceleration for the `\t(...)` transform.
   double? accel;
+  /// Styles/tags to apply inside the transform.
   AssOverrideTags styles;
 
   AssTransformation({
@@ -390,6 +525,26 @@ class AssTransformation {
     this.accel,
     required this.styles,
   });
+
+  /// Convenience builder for a `\t(...)` transformation.
+  ///
+  /// Example:
+  /// ```dart
+  /// tags.addT(t1: 0, t2: 250, accel: 1.5, build: (t) {
+  ///   t.addTag('fscx', '150');
+  ///   t.addTag('fscy', '150');
+  /// });
+  /// ```
+  static AssTransformation build({
+    int? t1,
+    int? t2,
+    double? accel,
+    required void Function(AssOverrideTags tags) build,
+  }) {
+    final styles = AssOverrideTags();
+    build(styles);
+    return AssTransformation(t1: t1, t2: t2, accel: accel, styles: styles);
+  }
 
   static AssTransformation? parse(String value) {
     value = value.trim();
@@ -433,7 +588,11 @@ class AssTransformation {
     StringBuffer bff = StringBuffer();
     bff.write('\\t(');
     if (t1 != null && t2 != null) {
-      bff.write('$t1,$t2,');
+      if (accel != null) {
+        bff.write('$t1,$t2,$accel,');
+      } else {
+        bff.write('$t1,$t2,');
+      }
     } else if (accel != null && accel != 1.0) {
       bff.write('$accel,');
     }

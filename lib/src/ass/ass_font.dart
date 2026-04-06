@@ -1,3 +1,13 @@
+/// Font measurement and text-to-shape utilities for ASS automation.
+///
+/// This module uses FreeType (via FFI) to:
+/// - Measure text extents ([AssFontTextExtents])
+/// - Read font metrics ([AssFontMetrics])
+/// - Convert text to vector shapes (ASS drawing / SVG)
+///
+/// Notes:
+/// - Calls are relatively expensive because fonts are initialized via FFI.
+/// - Prefer caching [AssFont] instances in automation code.
 import 'dart:ffi';
 import 'package:dart_ass/dart_ass.dart';
 import 'package:dart_freetype/dart_freetype_ffi.dart';
@@ -360,8 +370,16 @@ class AssFont {
 
   FreetypeBinding? freeType;
   Pointer<Pointer<FT_LibraryRec_>>? library;
+  // Back-compat: primary face handle (FT_Face*).
+  //
+  // Prefer using multi-face APIs (`addFallbackFont*`) instead of relying on this.
   Pointer<Pointer<FT_FaceRec_>>? face;
   FontCollector? fontCollector;
+
+  // Multi-face support (fallback fonts for missing glyphs).
+  final Map<String, Pointer<FT_FaceRec_>> _facesByPath = {};
+  final List<_AssFaceEntry> _faces = [];
+  final Map<int, int> _codePointToFaceIndex = {};
 
   double? ascender;
   double? descender;
@@ -383,7 +401,14 @@ class AssFont {
     required this.spacing,
   });
 
-  Future init() async {
+  Pointer<FT_FaceRec_>? get _primaryFace => _faces.isEmpty ? null : _faces.first.face;
+
+  /// Loads the primary face and initializes the FreeType library.
+  ///
+  /// You can later add fallback faces using:
+  /// - [addFallbackFont]
+  /// - [addFallbackFontPath]
+  Future<void> init() async {
     int err;
     freeType = loadFreeType();
 
@@ -393,16 +418,28 @@ class AssFont {
       print('err on Init FreeType');
     }
 
-    fontCollector = FontCollector(fontName: fontName, bold: bold, italic: italic);
-    String? fontPath = await fontCollector!.getFontPath();
-
-    face = calloc<FT_Face>();
-    err = freeType!.FT_New_Face(library!.value, fontPath!.asCharP(), 0, face!);
-    if (err == FT_Err_Unknown_File_Format) {
-      print("Font format is unsupported");
-    } else if (err == 1) {
-      print("Font file is missing or corrupted");
+    final primaryCollector = FontCollector(fontName: fontName, bold: bold, italic: italic);
+    fontCollector = primaryCollector;
+    final fontPath = await primaryCollector.getFontPath();
+    if (fontPath == null) {
+      print('Font not found: $fontName');
+      dispose();
+      return;
     }
+
+    await _getOrLoadFace(
+      fontPath,
+      resolvedBold: primaryCollector.resolvedBold,
+      resolvedItalic: primaryCollector.resolvedItalic,
+    );
+    if (_faces.isEmpty) {
+      dispose();
+      return;
+    }
+
+    // Primary face back-compat handle.
+    face = calloc<FT_Face>();
+    face!.value = _primaryFace!;
 
     scx = scaleX;
     scy = scaleY;
@@ -411,277 +448,562 @@ class AssFont {
     done = true;
   }
 
+  /// Updates this font's style parameters.
+  ///
+  /// This is a convenience to update all style-related fields at once
+  /// (similar to the constructor arguments). It keeps [setSize] as the single
+  /// place that applies scaling and updates FreeType sizes/metrics.
+  ///
+  /// If `fontName`/`bold`/`italic` changes, the primary face may be reloaded.
+  /// Existing fallback faces are kept.
+  Future<void> setStyle({
+    required String styleName,
+    required String fontName,
+    required double fontSize,
+    required bool bold,
+    required bool italic,
+    required bool underline,
+    required bool strikeOut,
+    required double scaleX,
+    required double scaleY,
+    required double spacing,
+  }) async {
+    if (!done) {
+      print('call method init first');
+      return;
+    }
+
+    final needsPrimaryReload =
+        this.fontName != fontName || this.bold != bold || this.italic != italic;
+
+    this.styleName = styleName;
+    this.fontName = fontName;
+    this.bold = bold;
+    this.italic = italic;
+    this.underline = underline;
+    this.strikeOut = strikeOut;
+    this.spacing = spacing;
+
+    // Store the original percentage values (setSize() will normalize them).
+    scx = scaleX;
+    scy = scaleY;
+    this.scaleX = scaleX;
+    this.scaleY = scaleY;
+    this.fontSize = fontSize;
+
+    if (needsPrimaryReload) {
+      await _reloadPrimaryFace();
+    }
+
+    setSize(fontSize);
+  }
+
+  Future<void> _reloadPrimaryFace() async {
+    if (!done) return;
+    if (_faces.isEmpty) return;
+
+    final oldPrimary = _faces.first;
+
+    final collector = FontCollector(fontName: fontName, bold: bold, italic: italic);
+    fontCollector = collector;
+    final newPath = await collector.getFontPath();
+    if (newPath == null) return;
+
+    final newPrimary = await _getOrLoadFace(
+      newPath,
+      resolvedBold: collector.resolvedBold,
+      resolvedItalic: collector.resolvedItalic,
+    );
+    if (!newPrimary.isValid) return;
+
+    // Move new primary entry to the front.
+    final idxNew = _faces.indexWhere((e) => e.face == newPrimary.face && e.path == newPrimary.path);
+    if (idxNew > 0) {
+      _faces.removeAt(idxNew);
+      _faces.insert(0, newPrimary);
+    } else if (idxNew == -1) {
+      // Should not happen, but keep it safe.
+      _faces.insert(0, newPrimary);
+    }
+
+    // Drop the old primary entry (avoid accumulating faces on repeated setStyle calls).
+    if (oldPrimary.face != newPrimary.face || oldPrimary.path != newPrimary.path) {
+      final idxOld = _faces.indexWhere(
+        (e) => e.face == oldPrimary.face && e.path == oldPrimary.path && (e.face != newPrimary.face || e.path != newPrimary.path),
+      );
+      if (idxOld >= 0) {
+        _faces.removeAt(idxOld);
+      }
+
+      final stillUsed = _faces.any((e) => e.face == oldPrimary.face);
+      if (!stillUsed && oldPrimary.isValid) {
+        // Keep maps consistent with live faces.
+        if (_facesByPath[oldPrimary.path] == oldPrimary.face) {
+          _facesByPath.remove(oldPrimary.path);
+        }
+        freeType!.FT_Done_Face(oldPrimary.face);
+      }
+    }
+
+    // Update caches/handles.
+    _codePointToFaceIndex.clear();
+    face ??= calloc<FT_Face>();
+    face!.value = _primaryFace!;
+  }
+
+  /// Adds a fallback face by font name (resolved via [FontCollector]).
+  Future<void> addFallbackFont(
+    String fallbackFontName, {
+    bool bold = false,
+    bool italic = false,
+  }) async {
+    if (!done) {
+      print('call method init first');
+      return;
+    }
+    final collector = FontCollector(fontName: fallbackFontName, bold: bold, italic: italic);
+    final path = await collector.getFontPath();
+    if (path == null) return;
+    await _getOrLoadFace(path, resolvedBold: collector.resolvedBold, resolvedItalic: collector.resolvedItalic);
+    setSize(fontSize);
+  }
+
+  /// Adds a fallback face by absolute file path.
+  Future<void> addFallbackFontPath(String fontPath) async {
+    if (!done) {
+      print('call method init first');
+      return;
+    }
+    await _getOrLoadFace(fontPath, resolvedBold: false, resolvedItalic: false);
+    setSize(fontSize);
+  }
+
+  Future<_AssFaceEntry> _getOrLoadFace(
+    String fontPath, {
+    required bool resolvedBold,
+    required bool resolvedItalic,
+  }) async {
+    final existingFace = _facesByPath[fontPath];
+    if (existingFace != null) {
+      final idx = _faces.indexWhere((e) => e.face == existingFace);
+      if (idx >= 0) return _faces[idx];
+    }
+
+    final ft = freeType!;
+    final lib = library!;
+
+    final outFacePtr = calloc<FT_Face>();
+    final pathPtr = fontPath.asCharP(); // malloc by default (must free)
+    try {
+      final err = ft.FT_New_Face(lib.value, pathPtr, 0, outFacePtr);
+      if (err == FT_Err_Unknown_File_Format) {
+        print("Font format is unsupported: $fontPath");
+      } else if (err == 1) {
+        print("Font file is missing or corrupted: $fontPath");
+      }
+      if (err != FT_Err_Ok) {
+        return _AssFaceEntry.empty(fontPath);
+      }
+
+      final face = outFacePtr.value;
+      _facesByPath[fontPath] = face;
+      final entry = _AssFaceEntry(
+        path: fontPath,
+        face: face,
+        resolvedBold: resolvedBold,
+        resolvedItalic: resolvedItalic,
+      );
+      _faces.add(entry);
+      _codePointToFaceIndex.clear(); // face set changed; clear cache
+      return entry;
+    } finally {
+      malloc.free(pathPtr);
+      calloc.free(outFacePtr);
+    }
+  }
+
+  void _applySizeToFace(_AssFaceEntry entry) {
+    final ft = freeType!;
+    setFontMetrics(ft, entry.face);
+    assFaceSetSize(ft, entry.face, fontSize);
+    entry.weight = assFaceGetWeight(ft, entry.face);
+  }
+
   void setSize(double? newFontSize, {bool fromInit = false}) {
     if (!done && !fromInit) {
       print('call method init first');
       return;
     }
     if (newFontSize == null) return;
+
     scaleX = scx!;
     scaleY = scy!;
     fontSize = newFontSize;
+
     if (fontSize > 100) {
       double factor = (fontSize - 100) / 100;
       scaleX += scaleX * factor;
       scaleY += scaleY * factor;
       fontSize = 100;
     }
+
     scaleX /= 100;
     scaleY /= 100;
-    setFontMetrics(freeType!, face!.value);
-    assFaceSetSize(freeType!, face!.value, fontSize);
-    AscDesc ascDesc = assFontGetAscDesc(freeType!, face!.value);
-    ascender = ascDesc.asc / UPSCALE;
-    descender = ascDesc.desc / UPSCALE;
-    height = ascender! + descender!;
-    weight = assFaceGetWeight(freeType!, face!.value);
+
+    for (final f in _faces) {
+      if (!f.isValid) continue;
+      _applySizeToFace(f);
+    }
+
+    // Metrics are derived from the primary face.
+    final primary = _primaryFace;
+    if (primary != null) {
+      final ascDesc = assFontGetAscDesc(freeType!, primary);
+      ascender = ascDesc.asc / UPSCALE;
+      descender = ascDesc.desc / UPSCALE;
+      height = ascender! + descender!;
+      weight = _faces.isNotEmpty ? _faces.first.weight : null;
+    }
   }
 
   AssFontMetrics? metrics() {
-    if (done) {
-      return AssFontMetrics(
-        ascent: ascender! * scaleY,
-        descent: descender! * scaleY,
-        height: height! * scaleY,
-        internalLeading:
-            (ascender! -
-                descender! -
-                (face!.value.ref.units_per_EM / UPSCALE)) *
-            scaleY,
-        externalLeading: 0,
-      );
-    } else {
+    if (!done) {
       print('call method init first');
+      return null;
+    }
+    final primary = _primaryFace;
+    if (primary == null) return null;
+    return AssFontMetrics(
+      ascent: (ascender ?? 0) * scaleY,
+      descent: (descender ?? 0) * scaleY,
+      height: (height ?? 0) * scaleY,
+      internalLeading: ((ascender ?? 0) - (descender ?? 0) - (primary.ref.units_per_EM / UPSCALE)) * scaleY,
+      externalLeading: 0,
+    );
+  }
+
+  _AssFaceEntry? _faceEntryForCodePoint(int codePoint) {
+    if (_faces.isEmpty) return null;
+    final cached = _codePointToFaceIndex[codePoint];
+    if (cached != null && cached >= 0 && cached < _faces.length) {
+      final e = _faces[cached];
+      if (e.isValid) return e;
+    }
+    final ft = freeType!;
+    for (int i = 0; i < _faces.length; i++) {
+      final e = _faces[i];
+      if (!e.isValid) continue;
+      final glyphIndex = ft.FT_Get_Char_Index(e.face, codePoint);
+      if (glyphIndex != 0) {
+        _codePointToFaceIndex[codePoint] = i;
+        return e;
+      }
     }
     return null;
   }
 
-  void callBackCharsGlyph(String text, GlyphCallback callback) async {
-    if (done) {
-      Runes units = text.runes;
-      for (int codePoint in units) {
-        int glyphIndex = freeType!.FT_Get_Char_Index(face!.value, codePoint);
-        if (glyphIndex == 0) {
-          continue;
-        }
-        int err = freeType!.FT_Load_Glyph(
-          face!.value,
-          glyphIndex,
-          FT_LOAD_DEFAULT,
-        );
-        if (err != 0) {
-          continue;
-        }
-        Pointer<FT_GlyphSlotRec_> glyphSlot = face!.value.ref.glyph;
-        if (bold && weight! < 700 && !fontCollector!.resolvedBold) {
-          assGlyphEmbolden(freeType!, glyphSlot);
-        }
-        if (italic && !fontCollector!.resolvedItalic) {
-          assGlyphItalicize(freeType!, glyphSlot);
-        }
-        callback(glyphSlot);
-      }
-    } else {
+  void callBackCharsGlyph(String text, GlyphCallback callback) {
+    if (!done) {
       print('call method init first');
+      return;
+    }
+    final ft = freeType!;
+    for (final codePoint in text.runes) {
+      final entry = _faceEntryForCodePoint(codePoint);
+      if (entry == null) continue;
+      final face = entry.face;
+      final glyphIndex = ft.FT_Get_Char_Index(face, codePoint);
+      if (glyphIndex == 0) continue;
+      final err = ft.FT_Load_Glyph(face, glyphIndex, FT_LOAD_DEFAULT);
+      if (err != 0) continue;
+      final glyphSlot = face.ref.glyph;
+
+      // Synthetic styles when the resolved font doesn't match requested style.
+      if (bold && (entry.weight ?? 400) < 700 && !entry.resolvedBold) {
+        assGlyphEmbolden(ft, glyphSlot);
+      }
+      if (italic && !entry.resolvedItalic) {
+        assGlyphItalicize(ft, glyphSlot);
+      }
+
+      callback(glyphSlot);
     }
   }
 
   AssFontTextExtents? textExtents(String text) {
-    if (done) {
-      double width = 0;
-      callBackCharsGlyph(text, (glyph) {
-        width += glyph.ref.metrics.horiAdvance + (spacing * UPSCALE);
-      });
-      return AssFontTextExtents(
-        width: (width / UPSCALE) * scaleX,
-        height: height! * scaleY,
-      );
-    } else {
+    if (!done) {
       print('call method init first');
+      return null;
     }
-    return null;
+    double width = 0;
+    callBackCharsGlyph(text, (glyph) {
+      width += glyph.ref.metrics.horiAdvance + (spacing * UPSCALE);
+    });
+    return AssFontTextExtents(
+      width: (width / UPSCALE) * scaleX,
+      height: (height ?? 0) * scaleY,
+    );
   }
 
   String? getTextToShape(String text) {
     isSvg = false;
-    if (done) {
-      final ft = freeType!;
-      final fface = face!.value;
-      final paths = <String>[];
-      int penX = 0;
-      callBackCharsGlyph(text, (glyph) {
-        final outline = glyph.ref.outline;
-        if (outline.n_points == 0 || outline.n_contours == 0) {
-          penX +=
-              glyph.ref.metrics.horiAdvance.toInt() +
-              (spacing * UPSCALE).toInt();
-          return;
-        }
-        final build = <List<dynamic>>[];
-        final ctxId = _nextDecomposeId++;
-        _decomposeRegistry[ctxId] = _DecomposeContext(
-          build,
-          penX,
-          (ascender! * UPSCALE).toInt(),
-        );
-        final userPtr = malloc<Int64>();
-        userPtr.value = ctxId;
-        final funcs = calloc<FT_Outline_Funcs>();
-        funcs.ref.move_to = _moveToPtr;
-        funcs.ref.line_to = _lineToPtr;
-        funcs.ref.conic_to = _conicToPtr;
-        funcs.ref.cubic_to = _cubicToPtr;
-        funcs.ref.shift = 0;
-        funcs.ref.delta = 0;
-        final outlinePtr = malloc<FT_Outline_>();
-        outlinePtr.ref = outline;
-        try {
-          ft.FT_Outline_Decompose(outlinePtr, funcs, userPtr.cast<Void>());
-        } catch (e) {
-          // If it fails, clear and continue (do not abort).
-        }
-        malloc.free(outlinePtr);
-        calloc.free(funcs);
-        final int idForRemoval = userPtr.value;
-        malloc.free(userPtr);
-        final _DecomposeContext? ctx = _decomposeRegistry.remove(idForRemoval);
-        final localBuild = ctx?.build ?? <List<dynamic>>[];
-        for (int i = 1; i < localBuild.length; i++) {
-          final val = localBuild[i];
-          if (val.isNotEmpty && val[0] == "q") {
-            final prev = localBuild[i - 1];
-            final p1x = prev[prev.length - 2] as num;
-            final p1y = prev.last as num;
-            final p4x = val[3] as num;
-            final p4y = val[4] as num;
-            final p2x = p1x + 2 / 3 * (val[1] - p1x);
-            final p2y = p1y + 2 / 3 * (val[2] - p1y);
-            final p3x = p4x + 2 / 3 * (val[1] - p4x);
-            final p3y = p4y + 2 / 3 * (val[2] - p4y);
-            localBuild[i] = ["b", p2x, p2y, p3x, p3y, p4x, p4y];
-          }
-        }
-        final glyphPath = localBuild.map((cmd) => cmd.join(" ")).join(" ");
-        String path = glyphPath;
-        if (underline || strikeOut) {
-          path += assGetGlyphOutline(
-            ft,
-            fface,
-            underline,
-            strikeOut,
-            penX,
-            (ascender! * UPSCALE).toInt(),
-          );
-        }
-        paths.add(path);
-        penX +=
-            glyph.ref.metrics.horiAdvance.toInt() + (spacing * UPSCALE).toInt();
-      });
-      return paths.join(" ");
-    } else {
+    if (!done) {
       print('call method init first');
+      return null;
     }
-    return null;
+
+    final ft = freeType!;
+    final paths = <String>[];
+    int penX = 0;
+
+    for (final codePoint in text.runes) {
+      final entry = _faceEntryForCodePoint(codePoint);
+      if (entry == null) continue;
+      final facePtr = entry.face;
+      final glyphIndex = ft.FT_Get_Char_Index(facePtr, codePoint);
+      if (glyphIndex == 0) continue;
+      final err = ft.FT_Load_Glyph(facePtr, glyphIndex, FT_LOAD_DEFAULT);
+      if (err != 0) continue;
+
+      final glyph = facePtr.ref.glyph;
+
+      if (bold && (entry.weight ?? 400) < 700 && !entry.resolvedBold) {
+        assGlyphEmbolden(ft, glyph);
+      }
+      if (italic && !entry.resolvedItalic) {
+        assGlyphItalicize(ft, glyph);
+      }
+
+      final outline = glyph.ref.outline;
+      if (outline.n_points == 0 || outline.n_contours == 0) {
+        penX += glyph.ref.metrics.horiAdvance.toInt() + (spacing * UPSCALE).toInt();
+        continue;
+      }
+
+      final build = <List<dynamic>>[];
+      final ctxId = _nextDecomposeId++;
+      _decomposeRegistry[ctxId] = _DecomposeContext(
+        build,
+        penX,
+        ((ascender ?? 0) * UPSCALE).toInt(),
+      );
+      final userPtr = malloc<Int64>();
+      userPtr.value = ctxId;
+      final funcs = calloc<FT_Outline_Funcs>();
+      funcs.ref.move_to = _moveToPtr;
+      funcs.ref.line_to = _lineToPtr;
+      funcs.ref.conic_to = _conicToPtr;
+      funcs.ref.cubic_to = _cubicToPtr;
+      funcs.ref.shift = 0;
+      funcs.ref.delta = 0;
+      final outlinePtr = malloc<FT_Outline_>();
+      outlinePtr.ref = outline;
+      try {
+        ft.FT_Outline_Decompose(outlinePtr, funcs, userPtr.cast<Void>());
+      } catch (e) {
+        // If it fails, clear and continue (do not abort).
+      }
+      malloc.free(outlinePtr);
+      calloc.free(funcs);
+      final int idForRemoval = userPtr.value;
+      malloc.free(userPtr);
+      final _DecomposeContext? ctx = _decomposeRegistry.remove(idForRemoval);
+      final localBuild = ctx?.build ?? <List<dynamic>>[];
+      for (int i = 1; i < localBuild.length; i++) {
+        final val = localBuild[i];
+        if (val.isNotEmpty && val[0] == "q") {
+          final prev = localBuild[i - 1];
+          final p1x = prev[prev.length - 2] as num;
+          final p1y = prev.last as num;
+          final p4x = val[3] as num;
+          final p4y = val[4] as num;
+          final p2x = p1x + 2 / 3 * (val[1] - p1x);
+          final p2y = p1y + 2 / 3 * (val[2] - p1y);
+          final p3x = p4x + 2 / 3 * (val[1] - p4x);
+          final p3y = p4y + 2 / 3 * (val[2] - p4y);
+          localBuild[i] = ["b", p2x, p2y, p3x, p3y, p4x, p4y];
+        }
+      }
+      final glyphPath = localBuild.map((cmd) => cmd.join(" ")).join(" ");
+      String path = glyphPath;
+      if (underline || strikeOut) {
+        path += assGetGlyphOutline(
+          ft,
+          facePtr,
+          underline,
+          strikeOut,
+          penX,
+          ((ascender ?? 0) * UPSCALE).toInt(),
+        );
+      }
+      paths.add(path);
+      penX += glyph.ref.metrics.horiAdvance.toInt() + (spacing * UPSCALE).toInt();
+    }
+
+    return paths.join(" ");
   }
 
   AssPaths? getTextToAssPaths(String text) {
-    String? shape = getTextToShape(text);
-    if (shape != null) {
-      return AssPaths.parse(shape);
-    }
+    final shape = getTextToShape(text);
+    if (shape != null) return AssPaths.parse(shape);
     return null;
   }
 
   String? getTextToSvg(String text) {
     isSvg = true;
-    if (done) {
-      final ft = freeType!;
-      final fface = face!.value;
-      final buffer = StringBuffer();
-      buffer.writeln(
-        '<svg xmlns="http://www.w3.org/2000/svg" '
-        'version="1.1" fill="black">',
-      );
-      double penX = 0.0;
-      callBackCharsGlyph(text, (glyph) {
-        final outline = glyph.ref.outline;
-        if (outline.n_points == 0 || outline.n_contours == 0) {
-          penX += glyph.ref.metrics.horiAdvance / UPSCALE + spacing;
-          return;
-        }
-        final build = <List<dynamic>>[];
-        final ctxId = _nextDecomposeId++;
-        _decomposeRegistry[ctxId] = _DecomposeContext(
-          build,
-          (penX * UPSCALE).toInt(),
-          (ascender! * UPSCALE).toInt(),
-        );
-        final userPtr = malloc<Int64>();
-        userPtr.value = ctxId;
-        final funcs = calloc<FT_Outline_Funcs>();
-        funcs.ref.move_to = _moveToPtr;
-        funcs.ref.line_to = _lineToPtr;
-        funcs.ref.conic_to = _conicToPtr;
-        funcs.ref.cubic_to = _cubicToPtr;
-        funcs.ref.shift = 0;
-        funcs.ref.delta = 0;
-        final outlinePtr = malloc<FT_Outline_>();
-        outlinePtr.ref = outline;
-        try {
-          ft.FT_Outline_Decompose(outlinePtr, funcs, userPtr.cast<Void>());
-        } catch (e) {
-          // If it fails, clear and continue (do not abort).
-        }
-        malloc.free(outlinePtr);
-        calloc.free(funcs);
-        final int idForRemoval = userPtr.value;
-        malloc.free(userPtr);
-        final ctx = _decomposeRegistry.remove(idForRemoval);
-        final localBuild = ctx?.build ?? [];
-        for (int i = 1; i < localBuild.length; i++) {
-          final val = localBuild[i];
-          if (val[0] == "q") {
-            final prev = localBuild[i - 1];
-            final p1x = prev[prev.length - 2] as num;
-            final p1y = prev.last as num;
-            final p4x = val[3] as num;
-            final p4y = val[4] as num;
-            final p2x = p1x + 2 / 3 * (val[1] - p1x);
-            final p2y = p1y + 2 / 3 * (val[2] - p1y);
-            final p3x = p4x + 2 / 3 * (val[1] - p4x);
-            final p3y = p4y + 2 / 3 * (val[2] - p4y);
-            localBuild[i] = ["C", p2x, p2y, p3x, p3y, p4x, p4y];
-          }
-        }
-        String path = localBuild.map((cmd) => cmd.join(" ")).join(" ");
-        if (underline || strikeOut) {
-          path += assGetGlyphOutline(
-            ft,
-            fface,
-            underline,
-            strikeOut,
-            (penX * UPSCALE).toInt(),
-            (ascender! * UPSCALE).toInt(),
-          );
-        }
-        buffer.writeln('<path d="$path" />');
-        penX += glyph.ref.metrics.horiAdvance / UPSCALE + spacing;
-      });
-      buffer.writeln('</svg>');
-      return buffer.toString();
-    } else {
+    if (!done) {
       print('call method init first');
+      return null;
     }
-    return null;
+
+    final ft = freeType!;
+    final buffer = StringBuffer();
+    buffer.writeln(
+      '<svg xmlns="http://www.w3.org/2000/svg" '
+      'version="1.1" fill="black">',
+    );
+
+    double penX = 0.0;
+    for (final codePoint in text.runes) {
+      final entry = _faceEntryForCodePoint(codePoint);
+      if (entry == null) continue;
+      final facePtr = entry.face;
+      final glyphIndex = ft.FT_Get_Char_Index(facePtr, codePoint);
+      if (glyphIndex == 0) continue;
+      final err = ft.FT_Load_Glyph(facePtr, glyphIndex, FT_LOAD_DEFAULT);
+      if (err != 0) continue;
+
+      final glyph = facePtr.ref.glyph;
+
+      if (bold && (entry.weight ?? 400) < 700 && !entry.resolvedBold) {
+        assGlyphEmbolden(ft, glyph);
+      }
+      if (italic && !entry.resolvedItalic) {
+        assGlyphItalicize(ft, glyph);
+      }
+
+      final outline = glyph.ref.outline;
+      if (outline.n_points == 0 || outline.n_contours == 0) {
+        penX += glyph.ref.metrics.horiAdvance / UPSCALE + spacing;
+        continue;
+      }
+      final build = <List<dynamic>>[];
+      final ctxId = _nextDecomposeId++;
+      _decomposeRegistry[ctxId] = _DecomposeContext(
+        build,
+        (penX * UPSCALE).toInt(),
+        ((ascender ?? 0) * UPSCALE).toInt(),
+      );
+      final userPtr = malloc<Int64>();
+      userPtr.value = ctxId;
+      final funcs = calloc<FT_Outline_Funcs>();
+      funcs.ref.move_to = _moveToPtr;
+      funcs.ref.line_to = _lineToPtr;
+      funcs.ref.conic_to = _conicToPtr;
+      funcs.ref.cubic_to = _cubicToPtr;
+      funcs.ref.shift = 0;
+      funcs.ref.delta = 0;
+      final outlinePtr = malloc<FT_Outline_>();
+      outlinePtr.ref = outline;
+      try {
+        ft.FT_Outline_Decompose(outlinePtr, funcs, userPtr.cast<Void>());
+      } catch (e) {
+        // If it fails, clear and continue (do not abort).
+      }
+      malloc.free(outlinePtr);
+      calloc.free(funcs);
+      final int idForRemoval = userPtr.value;
+      malloc.free(userPtr);
+      final ctx = _decomposeRegistry.remove(idForRemoval);
+      final localBuild = ctx?.build ?? <List<dynamic>>[];
+      for (int i = 1; i < localBuild.length; i++) {
+        final val = localBuild[i];
+        if (val.isNotEmpty && val[0] == "q") {
+          final prev = localBuild[i - 1];
+          final p1x = prev[prev.length - 2] as num;
+          final p1y = prev.last as num;
+          final p4x = val[3] as num;
+          final p4y = val[4] as num;
+          final p2x = p1x + 2 / 3 * (val[1] - p1x);
+          final p2y = p1y + 2 / 3 * (val[2] - p1y);
+          final p3x = p4x + 2 / 3 * (val[1] - p4x);
+          final p3y = p4y + 2 / 3 * (val[2] - p4y);
+          localBuild[i] = ["C", p2x, p2y, p3x, p3y, p4x, p4y];
+        }
+      }
+      String path = localBuild.map((cmd) => cmd.join(" ")).join(" ");
+      if (underline || strikeOut) {
+        path += assGetGlyphOutline(
+          ft,
+          facePtr,
+          underline,
+          strikeOut,
+          (penX * UPSCALE).toInt(),
+          ((ascender ?? 0) * UPSCALE).toInt(),
+        );
+      }
+      buffer.writeln('<path d="$path" />');
+      penX += glyph.ref.metrics.horiAdvance / UPSCALE + spacing;
+    }
+    buffer.writeln('</svg>');
+    return buffer.toString();
   }
 
   void dispose() {
     done = false;
+
+    final ft = freeType;
+    if (ft != null) {
+      // Face pointers belong to this library; dispose them all.
+      final seen = <Pointer<FT_FaceRec_>>{};
+      for (final entry in _faces) {
+        if (!entry.isValid) continue;
+        if (seen.add(entry.face)) {
+          ft.FT_Done_Face(entry.face);
+        }
+      }
+      _faces.clear();
+      _facesByPath.clear();
+      _codePointToFaceIndex.clear();
+
+      if (library != null) {
+        ft.FT_Done_FreeType(library!.value);
+        calloc.free(library!);
+        library = null;
+      }
+    }
+
     if (face != null) {
-      freeType!.FT_Done_Face(face!.value);
+      calloc.free(face!);
+      face = null;
     }
-    if (library != null) {
-      freeType!.FT_Done_FreeType(library!.value);
-    }
+
+    fontCollector = null;
+    freeType = null;
   }
+}
+
+class _AssFaceEntry {
+  final String path;
+  final Pointer<FT_FaceRec_> face;
+  final bool resolvedBold;
+  final bool resolvedItalic;
+  int? weight;
+
+  _AssFaceEntry({
+    required this.path,
+    required this.face,
+    required this.resolvedBold,
+    required this.resolvedItalic,
+    this.weight,
+  });
+
+  bool get isValid => face != nullptr;
+
+  static _AssFaceEntry empty(String path) => _AssFaceEntry(
+        path: path,
+        face: nullptr,
+        resolvedBold: false,
+        resolvedItalic: false,
+      );
 }

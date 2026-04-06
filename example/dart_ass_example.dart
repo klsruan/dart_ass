@@ -1,7 +1,7 @@
 import 'package:dart_ass/dart_ass.dart';
 
-void main() async {
-  AssFont assFont = AssFont(
+Future<void> main() async {
+  final assFont = AssFont(
     styleName: 'Default',
     fontName: 'Arial',
     fontSize: 20,
