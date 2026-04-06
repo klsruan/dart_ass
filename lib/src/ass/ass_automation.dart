@@ -39,13 +39,15 @@ import 'ass_time.dart';
 /// ```
 typedef AssDialogPredicate = bool Function(AssDialog dialog, int index);
 typedef AssDialogMapper = AssDialog Function(AssDialog dialog, int index);
-typedef AssTextMapper = String Function(String text, AssDialog dialog, int index);
+typedef AssTextMapper =
+    String Function(String text, AssDialog dialog, int index);
 
 typedef AssCharFxEnvCallback = void Function(AssCharTemplateEnv env);
 typedef AssWordFxEnvCallback = void Function(AssWordTemplateEnv env);
 typedef AssKaraokeFxEnvCallback = void Function(AssKaraokeTemplateEnv env);
 typedef AssFrameFxEnvCallback = void Function(AssFrameTemplateEnv env);
-typedef AssShapeExpandEnvCallback = void Function(AssShapeExpandTemplateEnv env);
+typedef AssShapeExpandEnvCallback =
+    void Function(AssShapeExpandTemplateEnv env);
 
 /// How a split operation should allocate time ranges for generated units.
 enum AssSplitTimeMode {
@@ -75,8 +77,10 @@ abstract class AssTimedUnit {
 enum AssBasePosSource {
   /// Obtained from an explicit `\pos(x,y)` tag.
   pos,
+
   /// Obtained from a `\move(x1,y1,...)` tag (uses the start point).
   move,
+
   /// Derived from `PlayRes + \an + margins`.
   derived,
 }
@@ -135,10 +139,14 @@ class AssGeneratedOutputStrategy {
 
   const AssGeneratedOutputStrategy._(this.placement, {this.index});
 
-  const AssGeneratedOutputStrategy.afterSource() : this._(AssGeneratedOutputPlacement.afterSource);
-  const AssGeneratedOutputStrategy.appendToEnd() : this._(AssGeneratedOutputPlacement.appendToEnd);
-  const AssGeneratedOutputStrategy.prependToStart() : this._(AssGeneratedOutputPlacement.prependToStart);
-  const AssGeneratedOutputStrategy.insertAt(int index) : this._(AssGeneratedOutputPlacement.insertAtIndex, index: index);
+  const AssGeneratedOutputStrategy.afterSource()
+    : this._(AssGeneratedOutputPlacement.afterSource);
+  const AssGeneratedOutputStrategy.appendToEnd()
+    : this._(AssGeneratedOutputPlacement.appendToEnd);
+  const AssGeneratedOutputStrategy.prependToStart()
+    : this._(AssGeneratedOutputPlacement.prependToStart);
+  const AssGeneratedOutputStrategy.insertAt(int index)
+    : this._(AssGeneratedOutputPlacement.insertAtIndex, index: index);
 }
 
 class AssAutomationResult {
@@ -180,7 +188,8 @@ class AssAutomationContext {
   /// modified multiple times in a flow, it still counts as 1 touched dialog.
   final Set<AssDialog> _touchedDialogs = HashSet.identity();
 
-  AssAutomationContext(this.ass, {AssAutomationShared? shared}) : shared = shared ?? AssAutomationShared();
+  AssAutomationContext(this.ass, {AssAutomationShared? shared})
+    : shared = shared ?? AssAutomationShared();
 
   AssDialogs ensureDialogs() {
     ass.dialogs ??= AssDialogs(dialogs: []);
@@ -238,27 +247,238 @@ class AssFxEmitter {
   AssFxEmitter share() => AssFxEmitter(_out);
 }
 
+void _applyOutputStrategy({
+  required List<AssDialog> dialogs,
+  required bool afterSource,
+  required List<AssDialog> globalOut,
+  required AssGeneratedOutputStrategy outputStrategy,
+}) {
+  if (afterSource || globalOut.isEmpty) return;
+  switch (outputStrategy.placement) {
+    case AssGeneratedOutputPlacement.appendToEnd:
+      dialogs.addAll(globalOut);
+      break;
+    case AssGeneratedOutputPlacement.prependToStart:
+      dialogs.insertAll(0, globalOut);
+      break;
+    case AssGeneratedOutputPlacement.insertAtIndex:
+      final idx = (outputStrategy.index ?? dialogs.length).clamp(
+        0,
+        dialogs.length,
+      );
+      dialogs.insertAll(idx, globalOut);
+      break;
+    case AssGeneratedOutputPlacement.afterSource:
+      break;
+  }
+}
+
+List<int> _sortedSelectionIndices(
+  AssAutomationContext ctx, {
+  required bool afterSource,
+}) {
+  final indices = ctx.selection.toList();
+  indices.sort((a, b) => afterSource ? b.compareTo(a) : a.compareTo(b));
+  return indices;
+}
+
+AssDialog _cloneDialog(
+  AssDialog d, {
+  int? layer,
+  int? startMs,
+  int? endMs,
+  bool? commented,
+  String? effect,
+}) {
+  return AssDialog(
+    layer: layer ?? d.layer,
+    startTime: AssTime(time: startMs ?? d.startTime.time),
+    endTime: AssTime(time: endMs ?? d.endTime.time),
+    styleName: d.styleName,
+    name: d.name,
+    marginL: d.marginL,
+    marginR: d.marginR,
+    marginV: d.marginV,
+    effect: effect ?? d.effect,
+    text: AssText.parse(d.text.getAss()) ?? d.text,
+    header: d.header,
+    commented: commented ?? d.commented,
+    style: d.style,
+  );
+}
+
+void _assignTf<T>(List<T> units, void Function(T unit, double tf) setTf) {
+  for (int ui = 0; ui < units.length; ui++) {
+    final tf = units.length <= 1 ? 0.0 : ui / (units.length - 1);
+    setTf(units[ui], tf);
+  }
+}
+
+void _assignTfAndXf<T>({
+  required List<T> units,
+  required void Function(T unit, double tf) setTf,
+  required void Function(T unit, double xf) setXf,
+  required double? Function(T unit) getAbsCenter,
+  required double? Function(T unit) getCenter,
+}) {
+  _assignTf(units, setTf);
+  if (units.isEmpty) return;
+
+  final x0 = getAbsCenter(units.first) ?? getCenter(units.first);
+  final x1 = getAbsCenter(units.last) ?? getCenter(units.last);
+
+  for (final u in units) {
+    final x = getAbsCenter(u) ?? getCenter(u);
+    if (x0 == null || x1 == null || x == null || x1 == x0) {
+      setXf(u, 0.0);
+    } else {
+      setXf(u, (x - x0) / (x1 - x0));
+    }
+  }
+}
+
+enum _CommentOriginalMode { never, always, whenGenerated }
+
+class _GeneratedPerDialogContext {
+  final AssAutomationContext ctx;
+  final AssAutomation auto;
+  final List<AssDialog> dialogs;
+  final AssDialog dialog;
+  final int index;
+
+  final int startMs;
+  final int endMs;
+
+  final String baseTagsAss;
+  final AssBasePos basePos;
+
+  final List<AssDialog> out;
+  final AssFxEmitter emitter;
+
+  const _GeneratedPerDialogContext({
+    required this.ctx,
+    required this.auto,
+    required this.dialogs,
+    required this.dialog,
+    required this.index,
+    required this.startMs,
+    required this.endMs,
+    required this.baseTagsAss,
+    required this.basePos,
+    required this.out,
+    required this.emitter,
+  });
+}
+
+Future<void> _runGeneratedDialogsOp({
+  required AssAutomationContext ctx,
+  required AssGeneratedOutputStrategy outputStrategy,
+  required String opName,
+  required bool commentOriginal,
+  _CommentOriginalMode commentMode = _CommentOriginalMode.whenGenerated,
+  required Future<void> Function(_GeneratedPerDialogContext pctx) perDialog,
+}) async {
+  final dialogs = ctx.ensureDialogs().dialogs;
+  final auto = AssAutomation(ctx.ass);
+
+  final afterSource =
+      outputStrategy.placement == AssGeneratedOutputPlacement.afterSource;
+  final indices = _sortedSelectionIndices(ctx, afterSource: afterSource);
+
+  final globalOut = <AssDialog>[];
+  int generatedTotal = 0;
+
+  for (final i in indices) {
+    if (i < 0 || i >= dialogs.length) continue;
+    final d = dialogs[i];
+    final start = d.startTime.time;
+    final end = d.endTime.time;
+    if (start == null || end == null || end <= start) continue;
+
+    final baseTagsAss = _baseTagsAssWithoutKaraoke(d);
+    final basePos = _effectiveBasePosForDialog(d);
+
+    final out = <AssDialog>[];
+    final emitter = AssFxEmitter(out);
+
+    await perDialog(
+      _GeneratedPerDialogContext(
+        ctx: ctx,
+        auto: auto,
+        dialogs: dialogs,
+        dialog: d,
+        index: i,
+        startMs: start,
+        endMs: end,
+        baseTagsAss: baseTagsAss,
+        basePos: basePos,
+        out: out,
+        emitter: emitter,
+      ),
+    );
+
+    if (commentOriginal && commentMode != _CommentOriginalMode.never) {
+      final shouldComment =
+          commentMode == _CommentOriginalMode.always ||
+          (commentMode == _CommentOriginalMode.whenGenerated && out.isNotEmpty);
+      if (shouldComment) {
+        d.commented = true;
+        ctx.touchDialog(d);
+      }
+    }
+
+    if (out.isNotEmpty) {
+      if (afterSource) {
+        dialogs.insertAll(i + 1, out);
+      } else {
+        globalOut.addAll(out);
+      }
+      generatedTotal += out.length;
+      ctx.log('$opName: dialog#$i generated=${out.length}');
+    }
+  }
+
+  _applyOutputStrategy(
+    dialogs: dialogs,
+    afterSource: afterSource,
+    globalOut: globalOut,
+    outputStrategy: outputStrategy,
+  );
+
+  ctx.log('$opName: totalGenerated=$generatedTotal');
+}
+
 enum AssRetimeMode {
   /// Retime relative to the full original line.
   line,
+
   /// Zero-length segment at the line start.
   preline,
+
   /// Zero-length segment at the line end.
   postline,
+
   /// Retime to the current unit time range (char/karaoke block).
   unit,
+
   /// Zero-length segment at unit start.
   preunit,
+
   /// Zero-length segment at unit end.
   postunit,
+
   /// From line start to unit start.
   start2unit,
+
   /// From unit end to line end.
   unit2end,
+
   /// Absolute times (requires `absStartMs/absEndMs`).
   abs,
+
   /// Adds deltas to the current `env.line` times.
   delta,
+
   /// Clamps the current `env.line` times inside the original line.
   clamp,
 }
@@ -267,14 +487,24 @@ class AssTemplateUtil {
   /// Linear interpolation between [v0] and [v1] by [t] (0..1).
   double lerp(double t, double v0, double v1) => (v1 * t) + (v0 * (1 - t));
 
-  double clamp(double v, double min, double max) => v < min ? min : (v > max ? max : v);
+  double clamp(double v, double min, double max) =>
+      v < min ? min : (v > max ? max : v);
 
   /// Remaps [v] from `[in0,in1]` to `[out0,out1]`.
-  double remap(double v, double in0, double in1, double out0, double out1, {bool clampOutput = false}) {
+  double remap(
+    double v,
+    double in0,
+    double in1,
+    double out0,
+    double out1, {
+    bool clampOutput = false,
+  }) {
     if (in1 == in0) return out0;
     final t = (v - in0) / (in1 - in0);
     final out = lerp(t, out0, out1);
-    return clampOutput ? clamp(out, math.min(out0, out1), math.max(out0, out1)) : out;
+    return clampOutput
+        ? clamp(out, math.min(out0, out1), math.max(out0, out1))
+        : out;
   }
 
   /// Applies an ASS-style acceleration curve (similar to `\t(...,accel,...)`).
@@ -290,11 +520,13 @@ class AssTemplateUtil {
 
   double easeInQuad(double t) => t * t;
   double easeOutQuad(double t) => 1 - (1 - t) * (1 - t);
-  double easeInOutQuad(double t) => t < 0.5 ? 2 * t * t : 1 - math.pow(-2 * t + 2, 2).toDouble() / 2;
+  double easeInOutQuad(double t) =>
+      t < 0.5 ? 2 * t * t : 1 - math.pow(-2 * t + 2, 2).toDouble() / 2;
 
   double easeInCubic(double t) => t * t * t;
   double easeOutCubic(double t) => 1 - math.pow(1 - t, 3).toDouble();
-  double easeInOutCubic(double t) => t < 0.5 ? 4 * t * t * t : 1 - math.pow(-2 * t + 2, 3).toDouble() / 2;
+  double easeInOutCubic(double t) =>
+      t < 0.5 ? 4 * t * t * t : 1 - math.pow(-2 * t + 2, 3).toDouble() / 2;
 
   double smoothstep(double edge0, double edge1, double x) {
     final t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
@@ -317,7 +549,12 @@ class AssTemplateUtil {
   /// A `\fad(tIn,tOut)` visibility factor at [relMs] (0..1).
   ///
   /// This ignores existing alpha tags and only provides the envelope.
-  double fadFactorAt(int relMs, int lineDurationMs, {required int tInMs, required int tOutMs}) {
+  double fadFactorAt(
+    int relMs,
+    int lineDurationMs, {
+    required int tInMs,
+    required int tOutMs,
+  }) {
     if (lineDurationMs <= 0) return 1;
     final t = clamp(relMs.toDouble(), 0, lineDurationMs.toDouble());
     final fin = tInMs <= 0 ? 1.0 : clamp(t / tInMs, 0, 1);
@@ -409,7 +646,9 @@ class AssAutomationShared {
   /// Runs [fn] with a temporary [AssAutomationShared] and disposes it afterwards.
   ///
   /// This is useful when you want to avoid manual `dispose()` calls.
-  static Future<T> using<T>(Future<T> Function(AssAutomationShared shared) fn) async {
+  static Future<T> using<T>(
+    Future<T> Function(AssAutomationShared shared) fn,
+  ) async {
     final shared = AssAutomationShared();
     try {
       return await fn(shared);
@@ -617,7 +856,10 @@ abstract class _AssTemplateEnvBase<TUnit extends AssTimedUnit> {
   ///
   /// This is mainly useful inside FBF callbacks, where you want each emitted
   /// frame-window to have a stable `\pos` rather than a live `\move`.
-  void bakeMoveToPosAtMid({AssTagScope scope = AssTagScope.leading, bool removeMoveTag = true}) {
+  void bakeMoveToPosAtMid({
+    AssTagScope scope = AssTagScope.leading,
+    bool removeMoveTag = true,
+  }) {
     _mutateTags(scope, (t) {
       final mv = t.move;
       if (mv == null) return;
@@ -672,7 +914,9 @@ abstract class _AssTemplateEnvBase<TUnit extends AssTimedUnit> {
 
     int si = 0;
     for (int f = firstFrame; f < lastFrameExclusive; f += stepFrames) {
-      final f2 = (f + stepFrames) > lastFrameExclusive ? lastFrameExclusive : (f + stepFrames);
+      final f2 = (f + stepFrames) > lastFrameExclusive
+          ? lastFrameExclusive
+          : (f + stepFrames);
 
       var absStart = msFromFrame(f);
       var absEnd = msFromFrame(f2);
@@ -693,7 +937,9 @@ abstract class _AssTemplateEnvBase<TUnit extends AssTimedUnit> {
         marginR: line.marginR,
         marginV: line.marginV,
         effect: line.effect,
-        text: AssText.parse(baseAssText) ?? AssText(segments: [AssTextSegment(text: baseAssText)]),
+        text:
+            AssText.parse(baseAssText) ??
+            AssText(segments: [AssTextSegment(text: baseAssText)]),
         header: line.header,
         commented: false,
         style: line.style,
@@ -718,14 +964,11 @@ abstract class _AssTemplateEnvBase<TUnit extends AssTimedUnit> {
       si++;
     }
 
-    for (int ui = 0; ui < outUnits.length; ui++) {
-      final u = outUnits[ui];
-      u.tf = outUnits.length <= 1 ? 0 : ui / (outUnits.length - 1);
-    }
+    _assignTf<AssFrameUnit>(outUnits, (u, tf) => u.tf = tf);
 
     for (final u in outUnits) {
       if (onFrameEnv != null) {
-        onFrameEnv!(
+        onFrameEnv(
           AssFrameTemplateEnv(
             shared: shared,
             basePos: basePos,
@@ -774,7 +1017,9 @@ class AssCharTemplateEnv extends _AssTemplateEnvBase<AssCharUnit> {
     switch (mode) {
       case AssRetimeMode.abs:
         if (absStartMs == null || absEndMs == null) {
-          throw ArgumentError('absStartMs/absEndMs required for AssRetimeMode.abs');
+          throw ArgumentError(
+            'absStartMs/absEndMs required for AssRetimeMode.abs',
+          );
         }
         s = absStartMs;
         e = absEndMs;
@@ -820,13 +1065,14 @@ class AssCharTemplateEnv extends _AssTemplateEnvBase<AssCharUnit> {
         e = orgE;
         break;
       case AssRetimeMode.line:
-      default:
         s = orgS;
         e = orgE;
         break;
     }
 
-    if (mode != AssRetimeMode.abs && mode != AssRetimeMode.delta && mode != AssRetimeMode.clamp) {
+    if (mode != AssRetimeMode.abs &&
+        mode != AssRetimeMode.delta &&
+        mode != AssRetimeMode.clamp) {
       s += startOffsetMs;
       e += endOffsetMs;
     }
@@ -867,7 +1113,9 @@ class AssWordTemplateEnv extends _AssTemplateEnvBase<AssWordUnit> {
     switch (mode) {
       case AssRetimeMode.abs:
         if (absStartMs == null || absEndMs == null) {
-          throw ArgumentError('absStartMs/absEndMs required for AssRetimeMode.abs');
+          throw ArgumentError(
+            'absStartMs/absEndMs required for AssRetimeMode.abs',
+          );
         }
         s = absStartMs;
         e = absEndMs;
@@ -919,7 +1167,9 @@ class AssWordTemplateEnv extends _AssTemplateEnvBase<AssWordUnit> {
         break;
     }
 
-    if (mode != AssRetimeMode.abs && mode != AssRetimeMode.delta && mode != AssRetimeMode.clamp) {
+    if (mode != AssRetimeMode.abs &&
+        mode != AssRetimeMode.delta &&
+        mode != AssRetimeMode.clamp) {
       s += startOffsetMs;
       e += endOffsetMs;
     }
@@ -960,7 +1210,9 @@ class AssKaraokeTemplateEnv extends _AssTemplateEnvBase<AssKaraokeUnit> {
     switch (mode) {
       case AssRetimeMode.abs:
         if (absStartMs == null || absEndMs == null) {
-          throw ArgumentError('absStartMs/absEndMs required for AssRetimeMode.abs');
+          throw ArgumentError(
+            'absStartMs/absEndMs required for AssRetimeMode.abs',
+          );
         }
         s = absStartMs;
         e = absEndMs;
@@ -1012,7 +1264,9 @@ class AssKaraokeTemplateEnv extends _AssTemplateEnvBase<AssKaraokeUnit> {
         break;
     }
 
-    if (mode != AssRetimeMode.abs && mode != AssRetimeMode.delta && mode != AssRetimeMode.clamp) {
+    if (mode != AssRetimeMode.abs &&
+        mode != AssRetimeMode.delta &&
+        mode != AssRetimeMode.clamp) {
       s += startOffsetMs;
       e += endOffsetMs;
     }
@@ -1057,7 +1311,9 @@ class AssFrameTemplateEnv extends _AssTemplateEnvBase<AssFrameUnit> {
     switch (mode) {
       case AssRetimeMode.abs:
         if (absStartMs == null || absEndMs == null) {
-          throw ArgumentError('absStartMs/absEndMs required for AssRetimeMode.abs');
+          throw ArgumentError(
+            'absStartMs/absEndMs required for AssRetimeMode.abs',
+          );
         }
         s = absStartMs;
         e = absEndMs;
@@ -1103,13 +1359,15 @@ class AssFrameTemplateEnv extends _AssTemplateEnvBase<AssFrameUnit> {
         e = orgE;
         break;
       case AssRetimeMode.line:
-      // default:
+        // default:
         s = orgS;
         e = orgE;
         break;
     }
 
-    if (mode != AssRetimeMode.abs && mode != AssRetimeMode.delta && mode != AssRetimeMode.clamp) {
+    if (mode != AssRetimeMode.abs &&
+        mode != AssRetimeMode.delta &&
+        mode != AssRetimeMode.clamp) {
       s += startOffsetMs;
       e += endOffsetMs;
     }
@@ -1125,7 +1383,8 @@ class AssFrameTemplateEnv extends _AssTemplateEnvBase<AssFrameUnit> {
 /// A shape-expand unit represents the whole source dialog, and `env.line` is the
 /// default output dialog containing the expanded drawing. You can mutate the
 /// generated [AssPaths] via `env.unit.paths` before emitting the line.
-class AssShapeExpandTemplateEnv extends _AssTemplateEnvBase<AssShapeExpandUnit> {
+class AssShapeExpandTemplateEnv
+    extends _AssTemplateEnvBase<AssShapeExpandUnit> {
   AssShapeExpandTemplateEnv({
     required super.shared,
     required super.basePos,
@@ -1144,12 +1403,7 @@ class AssShapeExpandTemplateEnv extends _AssTemplateEnvBase<AssShapeExpandUnit> 
   void syncLineTextFromPaths({AssOverrideTags? overrideTags}) {
     final t = overrideTags ?? tags;
     line.text = AssText(
-      segments: [
-        AssTextSegment(
-          text: unit.paths.toString(),
-          overrideTags: t,
-        ),
-      ],
+      segments: [AssTextSegment(text: unit.paths.toString(), overrideTags: t)],
     );
   }
 
@@ -1171,7 +1425,9 @@ class AssShapeExpandTemplateEnv extends _AssTemplateEnvBase<AssShapeExpandUnit> 
     switch (mode) {
       case AssRetimeMode.abs:
         if (absStartMs == null || absEndMs == null) {
-          throw ArgumentError('absStartMs/absEndMs required for AssRetimeMode.abs');
+          throw ArgumentError(
+            'absStartMs/absEndMs required for AssRetimeMode.abs',
+          );
         }
         s = absStartMs;
         e = absEndMs;
@@ -1217,13 +1473,15 @@ class AssShapeExpandTemplateEnv extends _AssTemplateEnvBase<AssShapeExpandUnit> 
         e = orgE;
         break;
       case AssRetimeMode.line:
-      // default:
+        // default:
         s = orgS;
         e = orgE;
         break;
     }
 
-    if (mode != AssRetimeMode.abs && mode != AssRetimeMode.delta && mode != AssRetimeMode.clamp) {
+    if (mode != AssRetimeMode.abs &&
+        mode != AssRetimeMode.delta &&
+        mode != AssRetimeMode.clamp) {
       s += startOffsetMs;
       e += endOffsetMs;
     }
@@ -1236,14 +1494,17 @@ class AssShapeExpandTemplateEnv extends _AssTemplateEnvBase<AssShapeExpandUnit> 
 
 AssOverrideTags _ensureLeadingOverrideTags(AssText text) {
   if (text.segments.isEmpty) {
-    text.segments.add(AssTextSegment(text: '', overrideTags: AssOverrideTags()));
+    text.segments.add(
+      AssTextSegment(text: '', overrideTags: AssOverrideTags()),
+    );
   }
   final first = text.segments.first;
   first.overrideTags ??= AssOverrideTags();
   return first.overrideTags!;
 }
 
-String _escapeAssText(String s) => s.replaceAll('{', r'\{').replaceAll('}', r'\}');
+String _escapeAssText(String s) =>
+    s.replaceAll('{', r'\{').replaceAll('}', r'\}');
 
 String _normalizeTextForFx(String s) => s
     .replaceAll(r'\N', '')
@@ -1251,42 +1512,44 @@ String _normalizeTextForFx(String s) => s
     .replaceAll('\n', '')
     .replaceAll(r'\h', ' ');
 
-List<String> _splitAssLineBreaks(String s) {
-  // Splits on \N, \n and literal newlines.
-  final out = <String>[];
-  final buf = StringBuffer();
+({int absStartMs, int absEndMs, bool stop})? _computeSplitWindow({
+  required int lineStartMs,
+  required int lineEndMs,
+  required int unitIndex,
+  required int unitCount,
+  required AssSplitTimeMode timeMode,
+  required int stepMs,
+  required int durMs,
+}) {
+  if (unitCount <= 0) return null;
+  if (lineEndMs <= lineStartMs) return null;
 
-  int i = 0;
-  while (i < s.length) {
-    final ch = s[i];
-    if (ch == '\n') {
-      out.add(buf.toString());
-      buf.clear();
-      i++;
-      continue;
-    }
-    if (ch == '\\' && i + 1 < s.length) {
-      final n = s[i + 1];
-      if (n == 'N' || n == 'n') {
-        out.add(buf.toString());
-        buf.clear();
-        i += 2;
-        continue;
-      }
-    }
-    buf.write(ch);
-    i++;
-  }
-  out.add(buf.toString());
-  return out;
-}
+  final startCs = _msToAssCsFloor(lineStartMs);
+  final endCs = _msToAssCsFloor(lineEndMs);
+  final totalCs = endCs - startCs;
+  if (totalCs <= 0) return null;
 
-AssOverrideTags? _leadingOverrideTagsOrNull(AssDialog dialog) {
-  for (final seg in dialog.text.segments) {
-    final t = seg.overrideTags;
-    if (t != null) return t;
+  if (timeMode == AssSplitTimeMode.proportional) {
+    final sCs = startCs + ((unitIndex * totalCs) ~/ unitCount);
+    var eCs = startCs + (((unitIndex + 1) * totalCs) ~/ unitCount);
+    if (eCs <= sCs) eCs = sCs + 1;
+    if (eCs > endCs) eCs = endCs;
+    final absStartMs = _assCsToMs(sCs);
+    final absEndMs = _assCsToMs(eCs);
+    if (absEndMs <= absStartMs) return null;
+    return (absStartMs: absStartMs, absEndMs: absEndMs, stop: false);
   }
-  return null;
+
+  final stepCs = math.max(1, _msToAssCsRound(stepMs));
+  final durCs2 = math.max(1, _msToAssCsRound(durMs));
+  final sCs = startCs + (unitIndex * stepCs);
+  if (sCs >= endCs) return (absStartMs: 0, absEndMs: 0, stop: true);
+  var eCs = sCs + durCs2;
+  if (eCs > endCs) eCs = endCs;
+  final absStartMs = _assCsToMs(sCs);
+  final absEndMs = _assCsToMs(eCs);
+  if (absEndMs <= absStartMs) return null;
+  return (absStartMs: absStartMs, absEndMs: absEndMs, stop: false);
 }
 
 double? _parseTagDouble(AssOverrideTags? tags, String name) {
@@ -1301,61 +1564,6 @@ int? _parseTagInt(AssOverrideTags? tags, String name) {
   final raw = tags.getTagValue(name);
   if (raw == null) return null;
   return int.tryParse(raw.trim());
-}
-
-void _reallocateAssPathsByAn({
-  required AssPaths paths,
-  required int an,
-}) {
-  final bb = paths.boundingBox();
-  final w = bb.width;
-  final h = bb.height;
-
-  double ax;
-  switch (an) {
-    case 1:
-    case 4:
-    case 7:
-      ax = bb.left;
-      break;
-    case 2:
-    case 5:
-    case 8:
-      ax = bb.left + w * 0.5;
-      break;
-    case 3:
-    case 6:
-    case 9:
-      ax = bb.right;
-      break;
-    default:
-      ax = bb.left + w * 0.5;
-      break;
-  }
-
-  double ay;
-  switch (an) {
-    case 7:
-    case 8:
-    case 9:
-      ay = bb.top;
-      break;
-    case 4:
-    case 5:
-    case 6:
-      ay = bb.top + h * 0.5;
-      break;
-    case 1:
-    case 2:
-    case 3:
-      ay = bb.bottom;
-      break;
-    default:
-      ay = bb.bottom;
-      break;
-  }
-
-  paths.move(-ax, -ay);
 }
 
 void _expandAssPathsAppearance({
@@ -1399,16 +1607,8 @@ void _expandAssPathsAppearance({
   final fax2 = fax * (effSx / effSy);
   final fay2 = fay * (effSy / effSx);
 
-  final x1 = <double>[
-    1.0,
-    fax2,
-    pos.x - org.x + xshad + asc * fax2,
-  ];
-  final y1 = <double>[
-    fay2,
-    1.0,
-    pos.y - org.y + yshad,
-  ];
+  final x1 = <double>[1.0, fax2, pos.x - org.x + xshad + asc * fax2];
+  final y1 = <double>[fay2, 1.0, pos.y - org.y + yshad];
 
   final offsX = org.x - pos.x - xshad;
   final offsY = org.y - pos.y - yshad;
@@ -1491,9 +1691,12 @@ int _effectiveAlignForDialog(AssDialog dialog) {
   return 2;
 }
 
-double _effectiveMarginL(AssDialog d) => d.marginL > 0 ? d.marginL : d.style.marginL;
-double _effectiveMarginR(AssDialog d) => d.marginR > 0 ? d.marginR : d.style.marginR;
-double _effectiveMarginV(AssDialog d) => d.marginV > 0 ? d.marginV : d.style.marginV;
+double _effectiveMarginL(AssDialog d) =>
+    d.marginL > 0 ? d.marginL : d.style.marginL;
+double _effectiveMarginR(AssDialog d) =>
+    d.marginR > 0 ? d.marginR : d.style.marginR;
+double _effectiveMarginV(AssDialog d) =>
+    d.marginV > 0 ? d.marginV : d.style.marginV;
 
 /// Best-effort base `\pos(x,y)` for a dialog.
 ///
@@ -1564,7 +1767,10 @@ AssBasePos _effectiveBasePosForDialog(AssDialog dialog) {
       break;
   }
 
-  return AssBasePos(pos: AssTagPosition(x, y), source: AssBasePosSource.derived);
+  return AssBasePos(
+    pos: AssTagPosition(x, y),
+    source: AssBasePosSource.derived,
+  );
 }
 
 double _breakLeftForWidth({
@@ -1731,7 +1937,9 @@ class _AssKaraokeRawBlock {
   });
 }
 
-Future<Map<int, _AssBreakLayout>> _computeBreakLayoutForDialog(AssDialog dialog) async {
+Future<Map<int, _AssBreakLayout>> _computeBreakLayoutForDialog(
+  AssDialog dialog,
+) async {
   final header = dialog.header;
   if (header.playResX <= 0 || header.playResY <= 0) return const {};
   final resX = header.playResX.toDouble();
@@ -1839,7 +2047,13 @@ Future<Map<int, _AssBreakLayout>> _computeBreakLayoutForDialog(AssDialog dialog)
           break;
       }
     } else {
-      left = _breakLeftForWidth(breakWidth: w, align: align, resX: resX, marginL: mL, marginR: mR);
+      left = _breakLeftForWidth(
+        breakWidth: w,
+        align: align,
+        resX: resX,
+        marginL: mL,
+        marginR: mR,
+      );
     }
 
     final top = baseTop + yCursor;
@@ -1877,20 +2091,28 @@ class AssCharUnit implements AssTimedUnit {
   final double? left;
   final double? center;
   final double? right;
+
   /// Absolute (script) X of this char, when layout info is available.
   final double? absX;
+
   /// Absolute left edge of this char.
   final double? absLeft;
+
   /// Absolute center of this char.
   final double? absCenter;
+
   /// Absolute right edge of this char.
   final double? absRight;
+
   /// Absolute top of the visual line-break this char belongs to.
   final double? absTop;
+
   /// Absolute middle of the visual line-break this char belongs to.
   final double? absMiddle;
+
   /// Absolute bottom of the visual line-break this char belongs to.
   final double? absBottom;
+
   /// Effective style state for this unit, when metrics are available.
   final Object? effectiveStyle;
   double? xf;
@@ -1923,7 +2145,8 @@ class AssCharUnit implements AssTimedUnit {
     this.effectiveStyle,
   });
 
-  AssOverrideTags ensureLeadingTags(AssDialog dialog) => _ensureLeadingOverrideTags(dialog.text);
+  AssOverrideTags ensureLeadingTags(AssDialog dialog) =>
+      _ensureLeadingOverrideTags(dialog.text);
 
   /// Convenience for `\pos(x,y)` usage.
   ///
@@ -1970,16 +2193,22 @@ class AssKaraokeUnit implements AssTimedUnit {
   final AssDialog defaultDialog;
   final double? width;
   final double? height;
+
   /// Leading spaces (ASCII spaces/tabs) of this block.
   final String? prespace;
+
   /// Trailing spaces (ASCII spaces/tabs) of this block.
   final String? postspace;
+
   /// Core text without leading/trailing ASCII spaces/tabs.
   final String? textSpaceStripped;
+
   /// Width of [prespace] in script pixels.
   final double? prespaceWidth;
+
   /// Width of [postspace] in script pixels.
   final double? postspaceWidth;
+
   /// Width of [textSpaceStripped] in script pixels.
   final double? coreWidth;
   final int? lineIndex;
@@ -1987,20 +2216,28 @@ class AssKaraokeUnit implements AssTimedUnit {
   final double? left;
   final double? center;
   final double? right;
+
   /// Absolute (script) X of this block, when layout info is available.
   final double? absX;
+
   /// Absolute left edge of the core text (excludes prespacewidth).
   final double? absLeft;
+
   /// Absolute center of the core text.
   final double? absCenter;
+
   /// Absolute right edge of the core text.
   final double? absRight;
+
   /// Absolute top of the visual line-break this block belongs to.
   final double? absTop;
+
   /// Absolute middle of the visual line-break this block belongs to.
   final double? absMiddle;
+
   /// Absolute bottom of the visual line-break this block belongs to.
   final double? absBottom;
+
   /// Effective style state for this unit, when metrics are available.
   final Object? effectiveStyle;
   double? xf;
@@ -2041,7 +2278,8 @@ class AssKaraokeUnit implements AssTimedUnit {
     this.effectiveStyle,
   });
 
-  AssOverrideTags ensureLeadingTags(AssDialog dialog) => _ensureLeadingOverrideTags(dialog.text);
+  AssOverrideTags ensureLeadingTags(AssDialog dialog) =>
+      _ensureLeadingOverrideTags(dialog.text);
 
   /// Convenience for `\pos(x,y)` usage.
   ///
@@ -2102,7 +2340,8 @@ class AssFrameUnit implements AssTimedUnit {
     required this.defaultDialog,
   });
 
-  AssOverrideTags ensureLeadingTags(AssDialog dialog) => _ensureLeadingOverrideTags(dialog.text);
+  AssOverrideTags ensureLeadingTags(AssDialog dialog) =>
+      _ensureLeadingOverrideTags(dialog.text);
 }
 
 class AssWordUnit implements AssTimedUnit {
@@ -2162,7 +2401,8 @@ class AssWordUnit implements AssTimedUnit {
     this.effectiveStyle,
   });
 
-  AssOverrideTags ensureLeadingTags(AssDialog dialog) => _ensureLeadingOverrideTags(dialog.text);
+  AssOverrideTags ensureLeadingTags(AssDialog dialog) =>
+      _ensureLeadingOverrideTags(dialog.text);
 
   double? get absPosX => absCenter ?? absX;
   double? get absPosY => absMiddle ?? absTop;
@@ -2227,8 +2467,12 @@ class AssAutomation {
   ///
   /// If [shared] is not provided, the flow owns an internal [AssAutomationShared]
   /// instance and disposes it automatically at the end of [AssAutomationFlow.run].
-  AssAutomationFlow flow({AssAutomationShared? shared}) =>
-      AssAutomationFlow._(ass, const [], shared ?? AssAutomationShared(), ownsShared: shared == null);
+  AssAutomationFlow flow({AssAutomationShared? shared}) => AssAutomationFlow._(
+    ass,
+    const [],
+    shared ?? AssAutomationShared(),
+    ownsShared: shared == null,
+  );
 
   @Deprecated('Use flow() (all automation is async).')
   AssAutomationFlow flowAsync() => flow();
@@ -2267,7 +2511,9 @@ class AssAutomation {
       marginR: marginR ?? style.marginR,
       marginV: marginV ?? style.marginV,
       effect: effect,
-      text: AssText.parse(textAss) ?? AssText(segments: [AssTextSegment(text: textAss)]),
+      text:
+          AssText.parse(textAss) ??
+          AssText(segments: [AssTextSegment(text: textAss)]),
       header: header,
       commented: commented,
       style: style,
@@ -2285,27 +2531,43 @@ class AssAutomationFlow {
   final AssAutomationShared _shared;
   final bool _ownsShared;
 
-  const AssAutomationFlow._(this._ass, this._ops, this._shared, {required bool ownsShared}) : _ownsShared = ownsShared;
+  const AssAutomationFlow._(
+    this._ass,
+    this._ops,
+    this._shared, {
+    required bool ownsShared,
+  }) : _ownsShared = ownsShared;
 
-  AssAutomationFlow _add(AssAutomationOp op) => AssAutomationFlow._(_ass, [..._ops, op], _shared, ownsShared: _ownsShared);
+  AssAutomationFlow _add(AssAutomationOp op) => AssAutomationFlow._(
+    _ass,
+    [..._ops, op],
+    _shared,
+    ownsShared: _ownsShared,
+  );
 
-  AssAutomationFlow selectAll({bool includeComments = false}) => _add(_AssSelectAllOp(includeComments: includeComments));
+  AssAutomationFlow selectAll({bool includeComments = false}) =>
+      _add(_AssSelectAllOp(includeComments: includeComments));
 
-  AssAutomationFlow where(AssDialogPredicate predicate) => _add(_AssWhereOp(predicate));
+  AssAutomationFlow where(AssDialogPredicate predicate) =>
+      _add(_AssWhereOp(predicate));
 
   AssAutomationFlow whereKaraoke() => _add(const _AssWhereKaraokeOp());
 
-  AssAutomationFlow whereStyle(String styleName) => where((d, _) => d.styleName == styleName);
+  AssAutomationFlow whereStyle(String styleName) =>
+      where((d, _) => d.styleName == styleName);
 
   /// Filters by the ASS "Name" field (often used as Actor).
-  AssAutomationFlow whereActor(String actor) => where((d, _) => d.name == actor);
+  AssAutomationFlow whereActor(String actor) =>
+      where((d, _) => d.name == actor);
 
-  AssAutomationFlow whereEffect(String effect) => where((d, _) => d.effect == effect);
+  AssAutomationFlow whereEffect(String effect) =>
+      where((d, _) => d.effect == effect);
 
   /// Ensures `dialog.line` is populated with measured segment metrics.
   ///
   /// This calls `await ass.dialogs?.extend(useTextData)`.
-  AssAutomationFlow ensureMetrics({bool useTextData = true}) => _add(_AssEnsureMetricsOp(useTextData: useTextData));
+  AssAutomationFlow ensureMetrics({bool useTextData = true}) =>
+      _add(_AssEnsureMetricsOp(useTextData: useTextData));
 
   /// Warms up FreeType fonts for the current selection.
   ///
@@ -2315,14 +2577,18 @@ class AssAutomationFlow {
   /// Notes:
   /// - Requires `ass.styles` to be present.
   /// - If no selection exists yet, it falls back to all dialogs.
-  AssAutomationFlow warmupFonts({bool includeComments = false}) => _add(_AssWarmupFontsOp(includeComments: includeComments));
+  AssAutomationFlow warmupFonts({bool includeComments = false}) =>
+      _add(_AssWarmupFontsOp(includeComments: includeComments));
 
-  AssAutomationFlow insertAt(int index, List<AssDialog> dialogs) => _add(_AssInsertAtOp(index, dialogs));
+  AssAutomationFlow insertAt(int index, List<AssDialog> dialogs) =>
+      _add(_AssInsertAtOp(index, dialogs));
 
-  AssAutomationFlow append(List<AssDialog> dialogs) => _add(_AssAppendOp(dialogs));
+  AssAutomationFlow append(List<AssDialog> dialogs) =>
+      _add(_AssAppendOp(dialogs));
 
   /// Convenience wrapper over [insertAt] for inserting a single dialog.
-  AssAutomationFlow insertDialogAt(int index, AssDialog dialog) => insertAt(index, [dialog]);
+  AssAutomationFlow insertDialogAt(int index, AssDialog dialog) =>
+      insertAt(index, [dialog]);
 
   /// Convenience wrapper over [append] for appending a single dialog.
   AssAutomationFlow appendDialog(AssDialog dialog) => append([dialog]);
@@ -2332,11 +2598,14 @@ class AssAutomationFlow {
 
   AssAutomationFlow removeSelected() => _add(const _AssRemoveSelectedOp());
 
-  AssAutomationFlow sortByTime({bool stable = true}) => _add(_AssSortByTimeOp(stable: stable));
+  AssAutomationFlow sortByTime({bool stable = true}) =>
+      _add(_AssSortByTimeOp(stable: stable));
 
-  AssAutomationFlow commentSelected(bool commented) => _add(_AssCommentSelectedOp(commented));
+  AssAutomationFlow commentSelected(bool commented) =>
+      _add(_AssCommentSelectedOp(commented));
 
-  AssAutomationFlow setStyle(String styleName) => _add(_AssSetStyleOp(styleName));
+  AssAutomationFlow setStyle(String styleName) =>
+      _add(_AssSetStyleOp(styleName));
 
   AssAutomationFlow setEffect(String effect) => _add(_AssSetEffectOp(effect));
 
@@ -2349,86 +2618,119 @@ class AssAutomationFlow {
     String effect = 'fx',
     bool includeCommented = false,
     bool onlySelected = false,
-  }) =>
-      _add(_AssRemoveFxOp(effect: effect, includeCommented: includeCommented, onlySelected: onlySelected));
+  }) => _add(
+    _AssRemoveFxOp(
+      effect: effect,
+      includeCommented: includeCommented,
+      onlySelected: onlySelected,
+    ),
+  );
 
   /// Duplicates each selected dialog and inserts the copies.
   AssAutomationFlow duplicateSelected({
     int times = 1,
     int layerOffset = 0,
     int timeOffsetMs = 0,
-    AssGeneratedOutputStrategy outputStrategy = const AssGeneratedOutputStrategy.afterSource(),
-  }) =>
-      _add(
-        _AssDuplicateSelectedOp(
-          times: times,
-          layerOffset: layerOffset,
-          timeOffsetMs: timeOffsetMs,
-          outputStrategy: outputStrategy,
-        ),
-      );
+    AssGeneratedOutputStrategy outputStrategy =
+        const AssGeneratedOutputStrategy.afterSource(),
+  }) => _add(
+    _AssDuplicateSelectedOp(
+      times: times,
+      layerOffset: layerOffset,
+      timeOffsetMs: timeOffsetMs,
+      outputStrategy: outputStrategy,
+    ),
+  );
 
   /// Copies selected dialogs into a specific [layer] (keeping originals).
   AssAutomationFlow copyToLayer({
     required int layer,
     int timeOffsetMs = 0,
-    AssGeneratedOutputStrategy outputStrategy = const AssGeneratedOutputStrategy.afterSource(),
-  }) =>
-      _add(
-        _AssCopyToLayerOp(
-          layer: layer,
-          timeOffsetMs: timeOffsetMs,
-          outputStrategy: outputStrategy,
-        ),
-      );
+    AssGeneratedOutputStrategy outputStrategy =
+        const AssGeneratedOutputStrategy.afterSource(),
+  }) => _add(
+    _AssCopyToLayerOp(
+      layer: layer,
+      timeOffsetMs: timeOffsetMs,
+      outputStrategy: outputStrategy,
+    ),
+  );
 
-  AssAutomationFlow mapDialogs(AssDialogMapper mapper) => _add(_AssMapDialogsOp(mapper));
+  AssAutomationFlow mapDialogs(AssDialogMapper mapper) =>
+      _add(_AssMapDialogsOp(mapper));
 
   AssAutomationFlow shiftTime(int deltaMs, {bool clampAtZero = true}) =>
       _add(_AssShiftTimeOp(deltaMs, clampAtZero: clampAtZero));
 
-  AssAutomationFlow mapText(AssTextMapper mapper) => _add(_AssMapTextOp(mapper));
+  AssAutomationFlow mapText(AssTextMapper mapper) =>
+      _add(_AssMapTextOp(mapper));
 
-  AssAutomationFlow replaceText(RegExp pattern, String replacement) => mapText((text, _, __) => text.replaceAll(pattern, replacement));
+  AssAutomationFlow replaceText(RegExp pattern, String replacement) =>
+      mapText((text, _, __) => text.replaceAll(pattern, replacement));
 
-  AssAutomationFlow ensureLeadingTags() => _add(const _AssEnsureLeadingTagsOp());
+  AssAutomationFlow ensureLeadingTags() =>
+      _add(const _AssEnsureLeadingTagsOp());
 
-  AssAutomationFlow setTag(String tagName, String value, {AssTagScope scope = AssTagScope.leading}) =>
-      _add(_AssSetTagOp(tagName, value, scope: scope));
+  AssAutomationFlow setTag(
+    String tagName,
+    String value, {
+    AssTagScope scope = AssTagScope.leading,
+  }) => _add(_AssSetTagOp(tagName, value, scope: scope));
 
-  AssAutomationFlow removeTag(String tagName, {AssTagScope scope = AssTagScope.leading}) =>
-      _add(_AssRemoveTagOp(tagName, scope: scope));
+  AssAutomationFlow removeTag(
+    String tagName, {
+    AssTagScope scope = AssTagScope.leading,
+  }) => _add(_AssRemoveTagOp(tagName, scope: scope));
 
   /// Typed tag helpers (preferred over [setTag]/[removeTag] when possible).
-  AssAutomationFlow setAlignment(int an, {AssTagScope scope = AssTagScope.leading}) =>
-      _add(_AssSetAlignmentOp(an, scope: scope));
+  AssAutomationFlow setAlignment(
+    int an, {
+    AssTagScope scope = AssTagScope.leading,
+  }) => _add(_AssSetAlignmentOp(an, scope: scope));
 
-  AssAutomationFlow setPos(AssTagPosition pos, {AssTagScope scope = AssTagScope.leading}) =>
-      _add(_AssSetPosOp(pos, scope: scope));
+  AssAutomationFlow setPos(
+    AssTagPosition pos, {
+    AssTagScope scope = AssTagScope.leading,
+  }) => _add(_AssSetPosOp(pos, scope: scope));
 
   AssAutomationFlow removePos({AssTagScope scope = AssTagScope.leading}) =>
       _add(_AssRemovePosOp(scope: scope));
 
-  AssAutomationFlow setOrg(AssTagPosition org, {AssTagScope scope = AssTagScope.leading}) =>
-      _add(_AssSetOrgOp(org, scope: scope));
+  AssAutomationFlow setOrg(
+    AssTagPosition org, {
+    AssTagScope scope = AssTagScope.leading,
+  }) => _add(_AssSetOrgOp(org, scope: scope));
 
-  AssAutomationFlow setMove(AssMove mv, {AssTagScope scope = AssTagScope.leading}) =>
-      _add(_AssSetMoveOp(mv, scope: scope));
+  AssAutomationFlow setMove(
+    AssMove mv, {
+    AssTagScope scope = AssTagScope.leading,
+  }) => _add(_AssSetMoveOp(mv, scope: scope));
 
   AssAutomationFlow removeMove({AssTagScope scope = AssTagScope.leading}) =>
       _add(_AssRemoveMoveOp(scope: scope));
 
-  AssAutomationFlow setClipRect(AssTagClipRect clip, {bool inverse = false, AssTagScope scope = AssTagScope.leading}) =>
-      _add(_AssSetClipRectOp(clip, inverse: inverse, scope: scope));
+  AssAutomationFlow setClipRect(
+    AssTagClipRect clip, {
+    bool inverse = false,
+    AssTagScope scope = AssTagScope.leading,
+  }) => _add(_AssSetClipRectOp(clip, inverse: inverse, scope: scope));
 
-  AssAutomationFlow setClipVect(AssTagClipVect clip, {bool inverse = false, AssTagScope scope = AssTagScope.leading}) =>
-      _add(_AssSetClipVectOp(clip, inverse: inverse, scope: scope));
+  AssAutomationFlow setClipVect(
+    AssTagClipVect clip, {
+    bool inverse = false,
+    AssTagScope scope = AssTagScope.leading,
+  }) => _add(_AssSetClipVectOp(clip, inverse: inverse, scope: scope));
 
-  AssAutomationFlow addTransform(AssTransformation tr, {AssTagScope scope = AssTagScope.leading}) =>
-      _add(_AssAddTransformOp(tr, scope: scope));
+  AssAutomationFlow addTransform(
+    AssTransformation tr, {
+    AssTagScope scope = AssTagScope.leading,
+  }) => _add(_AssAddTransformOp(tr, scope: scope));
 
-  AssAutomationFlow setFad(int tInMs, int tOutMs, {AssTagScope scope = AssTagScope.leading}) =>
-      _add(_AssSetFadOp(tInMs, tOutMs, scope: scope));
+  AssAutomationFlow setFad(
+    int tInMs,
+    int tOutMs, {
+    AssTagScope scope = AssTagScope.leading,
+  }) => _add(_AssSetFadOp(tInMs, tOutMs, scope: scope));
 
   /// Generates FX lines per character for each selected dialog.
   ///
@@ -2448,22 +2750,22 @@ class AssAutomationFlow {
     bool commentOriginal = true,
     bool preserveInlineStyle = true,
     AssSplitTimeMode timeMode = AssSplitTimeMode.indexStep,
-    AssGeneratedOutputStrategy outputStrategy = const AssGeneratedOutputStrategy.afterSource(),
+    AssGeneratedOutputStrategy outputStrategy =
+        const AssGeneratedOutputStrategy.afterSource(),
     AssCharFxEnvCallback? onCharEnv,
-  }) =>
-      _add(
-        _AssSplitCharsFxOp(
-          stepMs: stepMs,
-          durMs: durMs,
-          layerOffset: layerOffset,
-          includeSpaces: includeSpaces,
-          commentOriginal: commentOriginal,
-          preserveInlineStyle: preserveInlineStyle,
-          timeMode: timeMode,
-          outputStrategy: outputStrategy,
-          onCharEnv: onCharEnv,
-        ),
-      );
+  }) => _add(
+    _AssSplitCharsFxOp(
+      stepMs: stepMs,
+      durMs: durMs,
+      layerOffset: layerOffset,
+      includeSpaces: includeSpaces,
+      commentOriginal: commentOriginal,
+      preserveInlineStyle: preserveInlineStyle,
+      timeMode: timeMode,
+      outputStrategy: outputStrategy,
+      onCharEnv: onCharEnv,
+    ),
+  );
 
   AssAutomationFlow splitWordsFx({
     int stepMs = 120,
@@ -2473,22 +2775,22 @@ class AssAutomationFlow {
     bool commentOriginal = true,
     bool preserveInlineStyle = true,
     AssSplitTimeMode timeMode = AssSplitTimeMode.indexStep,
-    AssGeneratedOutputStrategy outputStrategy = const AssGeneratedOutputStrategy.afterSource(),
+    AssGeneratedOutputStrategy outputStrategy =
+        const AssGeneratedOutputStrategy.afterSource(),
     AssWordFxEnvCallback? onWordEnv,
-  }) =>
-      _add(
-        _AssSplitWordsFxOp(
-          stepMs: stepMs,
-          durMs: durMs,
-          layerOffset: layerOffset,
-          includeSpaces: includeSpaces,
-          commentOriginal: commentOriginal,
-          preserveInlineStyle: preserveInlineStyle,
-          timeMode: timeMode,
-          outputStrategy: outputStrategy,
-          onWordEnv: onWordEnv,
-        ),
-      );
+  }) => _add(
+    _AssSplitWordsFxOp(
+      stepMs: stepMs,
+      durMs: durMs,
+      layerOffset: layerOffset,
+      includeSpaces: includeSpaces,
+      commentOriginal: commentOriginal,
+      preserveInlineStyle: preserveInlineStyle,
+      timeMode: timeMode,
+      outputStrategy: outputStrategy,
+      onWordEnv: onWordEnv,
+    ),
+  );
 
   AssAutomationFlow splitKaraokeFx({
     int layerOffset = 10,
@@ -2496,20 +2798,20 @@ class AssAutomationFlow {
     bool includeNonKaraokeSegments = false,
     AssKaraokeSplitMode mode = AssKaraokeSplitMode.blocks,
     bool preserveInlineStyle = true,
-    AssGeneratedOutputStrategy outputStrategy = const AssGeneratedOutputStrategy.afterSource(),
+    AssGeneratedOutputStrategy outputStrategy =
+        const AssGeneratedOutputStrategy.afterSource(),
     AssKaraokeFxEnvCallback? onKaraokeEnv,
-  }) =>
-      _add(
-        _AssSplitKaraokeFxOp(
-          layerOffset: layerOffset,
-          commentOriginal: commentOriginal,
-          includeNonKaraokeSegments: includeNonKaraokeSegments,
-          mode: mode,
-          preserveInlineStyle: preserveInlineStyle,
-          outputStrategy: outputStrategy,
-          onKaraokeEnv: onKaraokeEnv,
-        ),
-      );
+  }) => _add(
+    _AssSplitKaraokeFxOp(
+      layerOffset: layerOffset,
+      commentOriginal: commentOriginal,
+      includeNonKaraokeSegments: includeNonKaraokeSegments,
+      mode: mode,
+      preserveInlineStyle: preserveInlineStyle,
+      outputStrategy: outputStrategy,
+      onKaraokeEnv: onKaraokeEnv,
+    ),
+  );
 
   /// Generates FX lines frame-by-frame for each selected dialog.
   ///
@@ -2524,20 +2826,20 @@ class AssAutomationFlow {
     int layerOffset = 10,
     bool commentOriginal = true,
     bool preserveOriginalText = true,
-    AssGeneratedOutputStrategy outputStrategy = const AssGeneratedOutputStrategy.afterSource(),
+    AssGeneratedOutputStrategy outputStrategy =
+        const AssGeneratedOutputStrategy.afterSource(),
     AssFrameFxEnvCallback? onFrameEnv,
-  }) =>
-      _add(
-        _AssSplitLineFbfFxOp(
-          fps: fps,
-          stepFrames: stepFrames,
-          layerOffset: layerOffset,
-          commentOriginal: commentOriginal,
-          preserveOriginalText: preserveOriginalText,
-          outputStrategy: outputStrategy,
-          onFrameEnv: onFrameEnv,
-        ),
-      );
+  }) => _add(
+    _AssSplitLineFbfFxOp(
+      fps: fps,
+      stepFrames: stepFrames,
+      layerOffset: layerOffset,
+      commentOriginal: commentOriginal,
+      preserveOriginalText: preserveOriginalText,
+      outputStrategy: outputStrategy,
+      onFrameEnv: onFrameEnv,
+    ),
+  );
 
   /// Expands each selected dialog into a vector drawing (`\p1`) and emits it as an FX line.
   ///
@@ -2556,18 +2858,18 @@ class AssAutomationFlow {
     int layerOffset = 0,
     bool commentOriginal = true,
     String effect = 'shape',
-    AssGeneratedOutputStrategy outputStrategy = const AssGeneratedOutputStrategy.afterSource(),
+    AssGeneratedOutputStrategy outputStrategy =
+        const AssGeneratedOutputStrategy.afterSource(),
     AssShapeExpandEnvCallback? onShapeExpandEnv,
-  }) =>
-      _add(
-        _AssOnShapeExpandOp(
-          layerOffset: layerOffset,
-          commentOriginal: commentOriginal,
-          effect: effect,
-          outputStrategy: outputStrategy,
-          onShapeExpandEnv: onShapeExpandEnv,
-        ),
-      );
+  }) => _add(
+    _AssOnShapeExpandOp(
+      layerOffset: layerOffset,
+      commentOriginal: commentOriginal,
+      effect: effect,
+      outputStrategy: outputStrategy,
+      onShapeExpandEnv: onShapeExpandEnv,
+    ),
+  );
 
   AssAutomationFlow custom(AssAutomationOp op) => _add(op);
 
@@ -2582,7 +2884,11 @@ class AssAutomationFlow {
         _shared.dispose();
       }
     }
-    return AssAutomationResult(ass: _ass, logs: ctx.logs, dialogsTouched: ctx.dialogsTouched);
+    return AssAutomationResult(
+      ass: _ass,
+      logs: ctx.logs,
+      dialogsTouched: ctx.dialogsTouched,
+    );
   }
 }
 
@@ -2770,288 +3076,226 @@ class _AssSplitWordsFxOp extends AssAutomationOp {
 
   @override
   Future<void> apply(AssAutomationContext ctx) async {
-    final dialogs = ctx.ensureDialogs().dialogs;
-    final auto = AssAutomation(ctx.ass);
+    await _runGeneratedDialogsOp(
+      ctx: ctx,
+      outputStrategy: outputStrategy,
+      opName: 'splitWordsFx',
+      commentOriginal: commentOriginal,
+      commentMode: _CommentOriginalMode.whenGenerated,
+      perDialog: (pctx) async {
+        final d = pctx.dialog;
+        final i = pctx.index;
+        final start = pctx.startMs;
+        final end = pctx.endMs;
+        final baseTagsAss = pctx.baseTagsAss;
+        final basePos = pctx.basePos;
+        final emitter = pctx.emitter;
+        final auto = pctx.auto;
 
-    final afterSource = outputStrategy.placement == AssGeneratedOutputPlacement.afterSource;
-    final indices = ctx.selection.toList()
-      ..sort((a, b) => afterSource ? b.compareTo(a) : a.compareTo(b));
-    int generatedTotal = 0;
-    final globalOut = <AssDialog>[];
+        final units = <AssWordUnit>[];
+        final breakLayout = d.line != null
+            ? await _computeBreakLayoutForDialog(d)
+            : const <int, _AssBreakLayout>{};
 
-    for (final i in indices) {
-      if (i < 0 || i >= dialogs.length) continue;
-      final d = dialogs[i];
-      final start = d.startTime.time;
-      final end = d.endTime.time;
-      if (start == null || end == null || end <= start) continue;
-
-      final baseTagsAss = _baseTagsAssWithoutKaraoke(d);
-      final basePos = _effectiveBasePosForDialog(d);
-
-      final out = <AssDialog>[];
-      final emitter = AssFxEmitter(out);
-      final units = <AssWordUnit>[];
-      final breakLayout = d.line != null ? await _computeBreakLayoutForDialog(d) : const <int, _AssBreakLayout>{};
-
-      if (d.line != null) {
-        final all = await d.line!.words(useTextData: true, includeWhitespace: true);
-        final words = <AssWords>[];
-        for (final w in all) {
-          final token = w.text;
-          final isSpace = token.trim().isEmpty;
-          if (!includeSpaces && isSpace) continue;
-          words.add(w);
-        }
-
-        final total = words.length;
-        final startCs = _msToAssCsFloor(start);
-        final endCs = _msToAssCsFloor(end);
-        final totalCs = endCs - startCs;
-        for (int ui = 0; ui < total; ui++) {
-          final w = words[ui];
-          final wi = w.index ?? ui;
-          final token = w.text;
-          final isSpace = token.trim().isEmpty;
-
-          int absStart;
-          int absEnd;
-          if (timeMode == AssSplitTimeMode.proportional) {
-            if (totalCs <= 0) continue;
-            final sCs = startCs + ((ui * totalCs) ~/ total);
-            var eCs = startCs + (((ui + 1) * totalCs) ~/ total);
-            if (eCs <= sCs) eCs = sCs + 1;
-            if (eCs > endCs) eCs = endCs;
-            absStart = _assCsToMs(sCs);
-            absEnd = _assCsToMs(eCs);
-          } else {
-            final stepCs = math.max(1, _msToAssCsRound(stepMs));
-            final durCs2 = math.max(1, _msToAssCsRound(durMs));
-            final sCs = startCs + (ui * stepCs);
-            if (sCs >= endCs) break;
-            var eCs = sCs + durCs2;
-            if (eCs > endCs) eCs = endCs;
-            absStart = _assCsToMs(sCs);
-            absEnd = _assCsToMs(eCs);
-          }
-          if (absEnd <= absStart) continue;
-
-          final tokenAss = _normalizeTextForFx(token);
-          final textAss = '$baseTagsAss${_escapeAssText(tokenAss)}';
-          final fx = auto.createDialog(
-            startMs: absStart,
-            endMs: absEnd,
-            styleName: d.styleName,
-            layer: d.layer + layerOffset,
-            name: d.name,
-            marginL: d.marginL,
-            marginR: d.marginR,
-            marginV: d.marginV,
-            effect: 'fx',
-            commented: false,
-            textAss: textAss,
+        if (d.line != null) {
+          final all = await d.line!.words(
+            useTextData: true,
+            includeWhitespace: true,
           );
-
-          if (preserveInlineStyle) {
-            final tags = _ensureLeadingOverrideTags(fx.text);
-            _applyEffectiveStyleOverrides(tags: tags, base: d.style, effectiveStyle: w.effectiveStyle);
+          final words = <AssWords>[];
+          for (final w in all) {
+            final token = w.text;
+            final isSpace = token.trim().isEmpty;
+            if (!includeSpaces && isSpace) continue;
+            words.add(w);
           }
 
-          final ww = w.width ?? 0.0;
-          final x = w.x ?? 0.0;
-          final left = x;
-          final center = x + ww * 0.5;
-          final right = x + ww;
-          final bl = breakLayout[w.lineIndex ?? 0];
-          final absX = bl != null ? (bl.left + x) : null;
-          final absLeft = bl != null ? (bl.left + left) : null;
-          final absCenter = bl != null ? (bl.left + center) : null;
-          final absRight = bl != null ? (bl.left + right) : null;
+          final total = words.length;
+          for (int ui = 0; ui < total; ui++) {
+            final w = words[ui];
+            final wi = w.index ?? ui;
+            final token = w.text;
+            final isSpace = token.trim().isEmpty;
 
-          units.add(
-            AssWordUnit(
-              source: d,
-              sourceIndex: i,
-              wordIndex: wi,
-              text: tokenAss,
-              isSpace: isSpace,
-              absStartMs: absStart,
-              absEndMs: absEnd,
-              baseTagsAss: baseTagsAss,
-              defaultDialog: fx,
-              width: w.width,
-              height: w.height,
-              lineIndex: w.lineIndex,
-              x: x,
-              left: left,
-              center: center,
-              right: right,
-              absX: absX ?? basePos.pos.x,
-              absLeft: absLeft ?? basePos.pos.x,
-              absCenter: absCenter ?? basePos.pos.x,
-              absRight: absRight ?? basePos.pos.x,
-              absTop: bl?.top ?? basePos.pos.y,
-              absMiddle: bl?.middle ?? basePos.pos.y,
-              absBottom: bl?.bottom ?? basePos.pos.y,
-              effectiveStyle: w.effectiveStyle,
-            ),
-          );
-        }
-      } else {
-        // No metrics available. Fallback: split on whitespace boundaries.
-        final raw = d.text.segments.map((s) => s.text).join();
-        final normalized = _normalizeTextForFx(raw);
-        final re = RegExp(r'(\s+|\S+)');
-        final tokens = <String>[];
-        for (final m in re.allMatches(normalized)) {
-          final token = m.group(0) ?? '';
-          final isSpace = token.trim().isEmpty;
-          if (!includeSpaces && isSpace) {
-            continue;
+            final win = _computeSplitWindow(
+              lineStartMs: start,
+              lineEndMs: end,
+              unitIndex: ui,
+              unitCount: total,
+              timeMode: timeMode,
+              stepMs: stepMs,
+              durMs: durMs,
+            );
+            if (win == null) continue;
+            if (win.stop) break;
+            final absStart = win.absStartMs;
+            final absEnd = win.absEndMs;
+
+            final tokenAss = _normalizeTextForFx(token);
+            final textAss = '$baseTagsAss${_escapeAssText(tokenAss)}';
+            final fx = auto.createDialog(
+              startMs: absStart,
+              endMs: absEnd,
+              styleName: d.styleName,
+              layer: d.layer + layerOffset,
+              name: d.name,
+              marginL: d.marginL,
+              marginR: d.marginR,
+              marginV: d.marginV,
+              effect: 'fx',
+              commented: false,
+              textAss: textAss,
+            );
+
+            if (preserveInlineStyle) {
+              final tags = _ensureLeadingOverrideTags(fx.text);
+              _applyEffectiveStyleOverrides(
+                tags: tags,
+                base: d.style,
+                effectiveStyle: w.effectiveStyle,
+              );
+            }
+
+            final ww = w.width ?? 0.0;
+            final x = w.x ?? 0.0;
+            final left = x;
+            final center = x + ww * 0.5;
+            final right = x + ww;
+            final bl = breakLayout[w.lineIndex ?? 0];
+            final absX = bl != null ? (bl.left + x) : null;
+            final absLeft = bl != null ? (bl.left + left) : null;
+            final absCenter = bl != null ? (bl.left + center) : null;
+            final absRight = bl != null ? (bl.left + right) : null;
+
+            units.add(
+              AssWordUnit(
+                source: d,
+                sourceIndex: i,
+                wordIndex: wi,
+                text: tokenAss,
+                isSpace: isSpace,
+                absStartMs: absStart,
+                absEndMs: absEnd,
+                baseTagsAss: baseTagsAss,
+                defaultDialog: fx,
+                width: w.width,
+                height: w.height,
+                lineIndex: w.lineIndex,
+                x: x,
+                left: left,
+                center: center,
+                right: right,
+                absX: absX ?? basePos.pos.x,
+                absLeft: absLeft ?? basePos.pos.x,
+                absCenter: absCenter ?? basePos.pos.x,
+                absRight: absRight ?? basePos.pos.x,
+                absTop: bl?.top ?? basePos.pos.y,
+                absMiddle: bl?.middle ?? basePos.pos.y,
+                absBottom: bl?.bottom ?? basePos.pos.y,
+                effectiveStyle: w.effectiveStyle,
+              ),
+            );
           }
-          tokens.add(token);
-        }
-
-        final total = tokens.length;
-        final startCs = _msToAssCsFloor(start);
-        final endCs = _msToAssCsFloor(end);
-        final totalCs = endCs - startCs;
-        for (int ui = 0; ui < total; ui++) {
-          final token = tokens[ui];
-          final isSpace = token.trim().isEmpty;
-          final wi = ui;
-
-          int absStart;
-          int absEnd;
-          if (timeMode == AssSplitTimeMode.proportional) {
-            if (totalCs <= 0) continue;
-            final sCs = startCs + ((ui * totalCs) ~/ total);
-            var eCs = startCs + (((ui + 1) * totalCs) ~/ total);
-            if (eCs <= sCs) eCs = sCs + 1;
-            if (eCs > endCs) eCs = endCs;
-            absStart = _assCsToMs(sCs);
-            absEnd = _assCsToMs(eCs);
-          } else {
-            final stepCs = math.max(1, _msToAssCsRound(stepMs));
-            final durCs2 = math.max(1, _msToAssCsRound(durMs));
-            final sCs = startCs + (ui * stepCs);
-            if (sCs >= endCs) break;
-            var eCs = sCs + durCs2;
-            if (eCs > endCs) eCs = endCs;
-            absStart = _assCsToMs(sCs);
-            absEnd = _assCsToMs(eCs);
+        } else {
+          // No metrics available. Fallback: split on whitespace boundaries.
+          final raw = d.text.segments.map((s) => s.text).join();
+          final normalized = _normalizeTextForFx(raw);
+          final re = RegExp(r'(\s+|\S+)');
+          final tokens = <String>[];
+          for (final m in re.allMatches(normalized)) {
+            final token = m.group(0) ?? '';
+            final isSpace = token.trim().isEmpty;
+            if (!includeSpaces && isSpace) continue;
+            tokens.add(token);
           }
-          if (absEnd <= absStart) continue;
 
-          final textAss = '$baseTagsAss${_escapeAssText(token)}';
-          final fx = auto.createDialog(
-            startMs: absStart,
-            endMs: absEnd,
-            styleName: d.styleName,
-            layer: d.layer + layerOffset,
-            name: d.name,
-            marginL: d.marginL,
-            marginR: d.marginR,
-            marginV: d.marginV,
-            effect: 'fx',
-            commented: false,
-            textAss: textAss,
-          );
+          final total = tokens.length;
+          for (int ui = 0; ui < total; ui++) {
+            final token = tokens[ui];
+            final isSpace = token.trim().isEmpty;
+            final wi = ui;
 
-          units.add(
-            AssWordUnit(
-              source: d,
-              sourceIndex: i,
-              wordIndex: wi,
-              text: token,
-              isSpace: isSpace,
-              absStartMs: absStart,
-              absEndMs: absEnd,
-              baseTagsAss: baseTagsAss,
-              defaultDialog: fx,
-              absX: basePos.pos.x,
-              absLeft: basePos.pos.x,
-              absCenter: basePos.pos.x,
-              absRight: basePos.pos.x,
-              absTop: basePos.pos.y,
-              absMiddle: basePos.pos.y,
-              absBottom: basePos.pos.y,
-              effectiveStyle: null,
-            ),
-          );
+            final win = _computeSplitWindow(
+              lineStartMs: start,
+              lineEndMs: end,
+              unitIndex: ui,
+              unitCount: total,
+              timeMode: timeMode,
+              stepMs: stepMs,
+              durMs: durMs,
+            );
+            if (win == null) continue;
+            if (win.stop) break;
+            final absStart = win.absStartMs;
+            final absEnd = win.absEndMs;
+
+            final textAss = '$baseTagsAss${_escapeAssText(token)}';
+            final fx = auto.createDialog(
+              startMs: absStart,
+              endMs: absEnd,
+              styleName: d.styleName,
+              layer: d.layer + layerOffset,
+              name: d.name,
+              marginL: d.marginL,
+              marginR: d.marginR,
+              marginV: d.marginV,
+              effect: 'fx',
+              commented: false,
+              textAss: textAss,
+            );
+
+            units.add(
+              AssWordUnit(
+                source: d,
+                sourceIndex: i,
+                wordIndex: wi,
+                text: token,
+                isSpace: isSpace,
+                absStartMs: absStart,
+                absEndMs: absEnd,
+                baseTagsAss: baseTagsAss,
+                defaultDialog: fx,
+                absX: basePos.pos.x,
+                absLeft: basePos.pos.x,
+                absCenter: basePos.pos.x,
+                absRight: basePos.pos.x,
+                absTop: basePos.pos.y,
+                absMiddle: basePos.pos.y,
+                absBottom: basePos.pos.y,
+                effectiveStyle: null,
+              ),
+            );
+          }
         }
-      }
 
-      for (int ui = 0; ui < units.length; ui++) {
-        units[ui].tf = units.length <= 1 ? 0 : ui / (units.length - 1);
-      }
+        _assignTfAndXf<AssWordUnit>(
+          units: units,
+          setTf: (u, tf) => u.tf = tf,
+          setXf: (u, xf) => u.xf = xf,
+          getAbsCenter: (u) => u.absCenter,
+          getCenter: (u) => u.center,
+        );
 
-      if (units.isNotEmpty) {
-        final x0 = units.first.absCenter ?? units.first.center;
-        final x1 = units.last.absCenter ?? units.last.center;
         for (final u in units) {
-          final x = u.absCenter ?? u.center;
-          if (x0 == null || x1 == null || x == null || x1 == x0) {
-            u.xf = 0;
+          if (onWordEnv != null) {
+            onWordEnv!(
+              AssWordTemplateEnv(
+                shared: ctx.shared,
+                basePos: basePos,
+                orgline: d,
+                sourceIndex: i,
+                units: units,
+                unit: u,
+                line: u.defaultDialog,
+                emit: emitter,
+              ),
+            );
           } else {
-            u.xf = (x - x0) / (x1 - x0);
+            emitter.emit(u.defaultDialog);
           }
         }
-      }
-
-      for (final u in units) {
-        if (onWordEnv != null) {
-          onWordEnv!(
-            AssWordTemplateEnv(
-              shared: ctx.shared,
-              basePos: basePos,
-              orgline: d,
-              sourceIndex: i,
-              units: units,
-              unit: u,
-              line: u.defaultDialog,
-              emit: emitter,
-            ),
-          );
-        } else {
-          emitter.emit(u.defaultDialog);
-        }
-      }
-
-      if (out.isNotEmpty && commentOriginal) {
-        d.commented = true;
-        ctx.touchDialog(d);
-      }
-
-      if (out.isNotEmpty) {
-        if (afterSource) {
-          dialogs.insertAll(i + 1, out);
-        } else {
-          globalOut.addAll(out);
-        }
-        generatedTotal += out.length;
-        ctx.log('splitWordsFx: dialog#$i generated=${out.length}');
-      }
-    }
-
-    if (!afterSource && globalOut.isNotEmpty) {
-      switch (outputStrategy.placement) {
-        case AssGeneratedOutputPlacement.appendToEnd:
-          dialogs.addAll(globalOut);
-          break;
-        case AssGeneratedOutputPlacement.prependToStart:
-          dialogs.insertAll(0, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.insertAtIndex:
-          final idx = (outputStrategy.index ?? dialogs.length).clamp(0, dialogs.length);
-          dialogs.insertAll(idx, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.afterSource:
-          break;
-      }
-    }
-
-    ctx.log('splitWordsFx: totalGenerated=$generatedTotal');
+      },
+    );
   }
 }
 
@@ -3080,280 +3324,222 @@ class _AssSplitCharsFxOp extends AssAutomationOp {
 
   @override
   Future<void> apply(AssAutomationContext ctx) async {
-    final dialogs = ctx.ensureDialogs().dialogs;
-    final auto = AssAutomation(ctx.ass);
+    await _runGeneratedDialogsOp(
+      ctx: ctx,
+      outputStrategy: outputStrategy,
+      opName: 'splitCharsFx',
+      commentOriginal: commentOriginal,
+      commentMode: _CommentOriginalMode.whenGenerated,
+      perDialog: (pctx) async {
+        final d = pctx.dialog;
+        final i = pctx.index;
+        final start = pctx.startMs;
+        final end = pctx.endMs;
+        final baseTagsAss = pctx.baseTagsAss;
+        final basePos = pctx.basePos;
+        final emitter = pctx.emitter;
+        final auto = pctx.auto;
 
-    final afterSource = outputStrategy.placement == AssGeneratedOutputPlacement.afterSource;
-    final indices = ctx.selection.toList()
-      ..sort((a, b) => afterSource ? b.compareTo(a) : a.compareTo(b));
-    int generatedTotal = 0;
-    final globalOut = <AssDialog>[];
+        final units = <AssCharUnit>[];
+        final breakLayout = d.line != null
+            ? await _computeBreakLayoutForDialog(d)
+            : const <int, _AssBreakLayout>{};
 
-    for (final i in indices) {
-      if (i < 0 || i >= dialogs.length) continue;
-      final d = dialogs[i];
-      final start = d.startTime.time;
-      final end = d.endTime.time;
-      if (start == null || end == null || end <= start) continue;
-
-      final baseTagsAss = _baseTagsAssWithoutKaraoke(d);
-      final basePos = _effectiveBasePosForDialog(d);
-
-      final out = <AssDialog>[];
-      final emitter = AssFxEmitter(out);
-      final units = <AssCharUnit>[];
-      final breakLayout = d.line != null ? await _computeBreakLayoutForDialog(d) : const <int, _AssBreakLayout>{};
-
-      if (d.line != null) {
-        final all = await d.line!.chars(useTextData: true, includeWhitespace: true);
-        final chars = <AssChars>[];
-        for (final c in all) {
-          final ch = c.text;
-          final isSpace = c.isSpace ?? ch.trim().isEmpty;
-          if (!includeSpaces && isSpace) continue;
-          chars.add(c);
-        }
-
-        final total = chars.length;
-        final startCs = _msToAssCsFloor(start);
-        final endCs = _msToAssCsFloor(end);
-        final totalCs = endCs - startCs;
-        for (int ui = 0; ui < total; ui++) {
-          final c = chars[ui];
-          final ci = c.index ?? ui;
-          final ch = c.text;
-          final isSpace = c.isSpace ?? ch.trim().isEmpty;
-
-          int absStart;
-          int absEnd;
-          if (timeMode == AssSplitTimeMode.proportional) {
-            if (totalCs <= 0) continue;
-            final sCs = startCs + ((ui * totalCs) ~/ total);
-            var eCs = startCs + (((ui + 1) * totalCs) ~/ total);
-            if (eCs <= sCs) eCs = sCs + 1;
-            if (eCs > endCs) eCs = endCs;
-            absStart = _assCsToMs(sCs);
-            absEnd = _assCsToMs(eCs);
-          } else {
-            final stepCs = math.max(1, _msToAssCsRound(stepMs));
-            final durCs2 = math.max(1, _msToAssCsRound(durMs));
-            final sCs = startCs + (ui * stepCs);
-            if (sCs >= endCs) break;
-            var eCs = sCs + durCs2;
-            if (eCs > endCs) eCs = endCs;
-            absStart = _assCsToMs(sCs);
-            absEnd = _assCsToMs(eCs);
-          }
-          if (absEnd <= absStart) continue;
-
-          final textAss = '$baseTagsAss${_escapeAssText(ch)}';
-          final fx = auto.createDialog(
-            startMs: absStart,
-            endMs: absEnd,
-            styleName: d.styleName,
-            layer: d.layer + layerOffset,
-            name: d.name,
-            marginL: d.marginL,
-            marginR: d.marginR,
-            marginV: d.marginV,
-            effect: 'fx',
-            commented: false,
-            textAss: textAss,
+        if (d.line != null) {
+          final all = await d.line!.chars(
+            useTextData: true,
+            includeWhitespace: true,
           );
-          if (preserveInlineStyle) {
-            final tags = _ensureLeadingOverrideTags(fx.text);
-            _applyEffectiveStyleOverrides(tags: tags, base: d.style, effectiveStyle: c.effectiveStyle);
+          final chars = <AssChars>[];
+          for (final c in all) {
+            final ch = c.text;
+            final isSpace = c.isSpace ?? ch.trim().isEmpty;
+            if (!includeSpaces && isSpace) continue;
+            chars.add(c);
           }
 
-          final w = c.width ?? 0;
-          final x = c.x ?? 0;
-          final bl = breakLayout[c.lineIndex ?? 0];
-          final absX = bl != null ? (bl.left + x) : null;
-          final absLeft = bl != null ? (bl.left + (c.left ?? x)) : null;
-          final absCenter = bl != null ? (bl.left + (c.center ?? (x + w * 0.5))) : null;
-          final absRight = bl != null ? (bl.left + (c.right ?? (x + w))) : null;
-          units.add(
-            AssCharUnit(
-              source: d,
-              sourceIndex: i,
-              charIndex: ci,
-              char: ch,
-              isSpace: isSpace,
-              absStartMs: absStart,
-              absEndMs: absEnd,
-              baseTagsAss: baseTagsAss,
-              defaultDialog: fx,
-              width: c.width,
-              height: c.height,
-              lineIndex: c.lineIndex,
-              x: x,
-              left: c.left ?? x,
-              center: c.center ?? (x + w * 0.5),
-              right: c.right ?? (x + w),
-              absX: absX ?? basePos.pos.x,
-              absLeft: absLeft ?? basePos.pos.x,
-              absCenter: absCenter ?? basePos.pos.x,
-              absRight: absRight ?? basePos.pos.x,
-              absTop: bl?.top ?? basePos.pos.y,
-              absMiddle: bl?.middle ?? basePos.pos.y,
-              absBottom: bl?.bottom ?? basePos.pos.y,
-              effectiveStyle: c.effectiveStyle,
-            ),
-          );
-        }
-      } else {
-        final raw = d.text.segments.map((s) => s.text).join();
-        final normalized = _normalizeTextForFx(raw);
-        final chars = <String>[];
-        for (final rune in normalized.runes) {
-          final ch = String.fromCharCode(rune);
-          final isSpace = ch.trim().isEmpty;
-          if (!includeSpaces && isSpace) {
-            continue;
+          final total = chars.length;
+          for (int ui = 0; ui < total; ui++) {
+            final c = chars[ui];
+            final ci = c.index ?? ui;
+            final ch = c.text;
+            final isSpace = c.isSpace ?? ch.trim().isEmpty;
+
+            final win = _computeSplitWindow(
+              lineStartMs: start,
+              lineEndMs: end,
+              unitIndex: ui,
+              unitCount: total,
+              timeMode: timeMode,
+              stepMs: stepMs,
+              durMs: durMs,
+            );
+            if (win == null) continue;
+            if (win.stop) break;
+            final absStart = win.absStartMs;
+            final absEnd = win.absEndMs;
+
+            final textAss = '$baseTagsAss${_escapeAssText(ch)}';
+            final fx = auto.createDialog(
+              startMs: absStart,
+              endMs: absEnd,
+              styleName: d.styleName,
+              layer: d.layer + layerOffset,
+              name: d.name,
+              marginL: d.marginL,
+              marginR: d.marginR,
+              marginV: d.marginV,
+              effect: 'fx',
+              commented: false,
+              textAss: textAss,
+            );
+            if (preserveInlineStyle) {
+              final tags = _ensureLeadingOverrideTags(fx.text);
+              _applyEffectiveStyleOverrides(
+                tags: tags,
+                base: d.style,
+                effectiveStyle: c.effectiveStyle,
+              );
+            }
+
+            final w = c.width ?? 0;
+            final x = c.x ?? 0;
+            final bl = breakLayout[c.lineIndex ?? 0];
+            final absX = bl != null ? (bl.left + x) : null;
+            final absLeft = bl != null ? (bl.left + (c.left ?? x)) : null;
+            final absCenter = bl != null
+                ? (bl.left + (c.center ?? (x + w * 0.5)))
+                : null;
+            final absRight = bl != null
+                ? (bl.left + (c.right ?? (x + w)))
+                : null;
+            units.add(
+              AssCharUnit(
+                source: d,
+                sourceIndex: i,
+                charIndex: ci,
+                char: ch,
+                isSpace: isSpace,
+                absStartMs: absStart,
+                absEndMs: absEnd,
+                baseTagsAss: baseTagsAss,
+                defaultDialog: fx,
+                width: c.width,
+                height: c.height,
+                lineIndex: c.lineIndex,
+                x: x,
+                left: c.left ?? x,
+                center: c.center ?? (x + w * 0.5),
+                right: c.right ?? (x + w),
+                absX: absX ?? basePos.pos.x,
+                absLeft: absLeft ?? basePos.pos.x,
+                absCenter: absCenter ?? basePos.pos.x,
+                absRight: absRight ?? basePos.pos.x,
+                absTop: bl?.top ?? basePos.pos.y,
+                absMiddle: bl?.middle ?? basePos.pos.y,
+                absBottom: bl?.bottom ?? basePos.pos.y,
+                effectiveStyle: c.effectiveStyle,
+              ),
+            );
           }
-          chars.add(ch);
-        }
-
-        final total = chars.length;
-        final startCs = _msToAssCsFloor(start);
-        final endCs = _msToAssCsFloor(end);
-        final totalCs = endCs - startCs;
-        for (int ui = 0; ui < total; ui++) {
-          final ch = chars[ui];
-          final isSpace = ch.trim().isEmpty;
-          final ci = ui;
-
-          int absStart;
-          int absEnd;
-          if (timeMode == AssSplitTimeMode.proportional) {
-            if (totalCs <= 0) continue;
-            final sCs = startCs + ((ui * totalCs) ~/ total);
-            var eCs = startCs + (((ui + 1) * totalCs) ~/ total);
-            if (eCs <= sCs) eCs = sCs + 1;
-            if (eCs > endCs) eCs = endCs;
-            absStart = _assCsToMs(sCs);
-            absEnd = _assCsToMs(eCs);
-          } else {
-            final stepCs = math.max(1, _msToAssCsRound(stepMs));
-            final durCs2 = math.max(1, _msToAssCsRound(durMs));
-            final sCs = startCs + (ui * stepCs);
-            if (sCs >= endCs) break;
-            var eCs = sCs + durCs2;
-            if (eCs > endCs) eCs = endCs;
-            absStart = _assCsToMs(sCs);
-            absEnd = _assCsToMs(eCs);
+        } else {
+          final raw = d.text.segments.map((s) => s.text).join();
+          final normalized = _normalizeTextForFx(raw);
+          final chars = <String>[];
+          for (final rune in normalized.runes) {
+            final ch = String.fromCharCode(rune);
+            final isSpace = ch.trim().isEmpty;
+            if (!includeSpaces && isSpace) continue;
+            chars.add(ch);
           }
-          if (absEnd <= absStart) continue;
 
-          final textAss = '$baseTagsAss${_escapeAssText(ch)}';
-          final fx = auto.createDialog(
-            startMs: absStart,
-            endMs: absEnd,
-            styleName: d.styleName,
-            layer: d.layer + layerOffset,
-            name: d.name,
-            marginL: d.marginL,
-            marginR: d.marginR,
-            marginV: d.marginV,
-            effect: 'fx',
-            commented: false,
-            textAss: textAss,
-          );
+          final total = chars.length;
+          for (int ui = 0; ui < total; ui++) {
+            final ch = chars[ui];
+            final isSpace = ch.trim().isEmpty;
+            final ci = ui;
 
-          units.add(
-            AssCharUnit(
-              source: d,
-              sourceIndex: i,
-              charIndex: ci,
-              char: ch,
-              isSpace: isSpace,
-              absStartMs: absStart,
-              absEndMs: absEnd,
-              baseTagsAss: baseTagsAss,
-              defaultDialog: fx,
-              absX: basePos.pos.x,
-              absLeft: basePos.pos.x,
-              absCenter: basePos.pos.x,
-              absRight: basePos.pos.x,
-              absTop: basePos.pos.y,
-              absMiddle: basePos.pos.y,
-              absBottom: basePos.pos.y,
-              effectiveStyle: null,
-            ),
-          );
+            final win = _computeSplitWindow(
+              lineStartMs: start,
+              lineEndMs: end,
+              unitIndex: ui,
+              unitCount: total,
+              timeMode: timeMode,
+              stepMs: stepMs,
+              durMs: durMs,
+            );
+            if (win == null) continue;
+            if (win.stop) break;
+            final absStart = win.absStartMs;
+            final absEnd = win.absEndMs;
+
+            final textAss = '$baseTagsAss${_escapeAssText(ch)}';
+            final fx = auto.createDialog(
+              startMs: absStart,
+              endMs: absEnd,
+              styleName: d.styleName,
+              layer: d.layer + layerOffset,
+              name: d.name,
+              marginL: d.marginL,
+              marginR: d.marginR,
+              marginV: d.marginV,
+              effect: 'fx',
+              commented: false,
+              textAss: textAss,
+            );
+
+            units.add(
+              AssCharUnit(
+                source: d,
+                sourceIndex: i,
+                charIndex: ci,
+                char: ch,
+                isSpace: isSpace,
+                absStartMs: absStart,
+                absEndMs: absEnd,
+                baseTagsAss: baseTagsAss,
+                defaultDialog: fx,
+                absX: basePos.pos.x,
+                absLeft: basePos.pos.x,
+                absCenter: basePos.pos.x,
+                absRight: basePos.pos.x,
+                absTop: basePos.pos.y,
+                absMiddle: basePos.pos.y,
+                absBottom: basePos.pos.y,
+                effectiveStyle: null,
+              ),
+            );
+          }
         }
-      }
 
-      for (int ui = 0; ui < units.length; ui++) {
-        units[ui].tf = units.length <= 1 ? 0 : ui / (units.length - 1);
-      }
+        _assignTfAndXf<AssCharUnit>(
+          units: units,
+          setTf: (u, tf) => u.tf = tf,
+          setXf: (u, xf) => u.xf = xf,
+          getAbsCenter: (u) => u.absCenter,
+          getCenter: (u) => u.center,
+        );
 
-      if (units.isNotEmpty) {
-        final x0 = units.first.absCenter ?? units.first.center;
-        final x1 = units.last.absCenter ?? units.last.center;
         for (final u in units) {
-          final x = u.absCenter ?? u.center;
-          if (x0 == null || x1 == null || x == null || x1 == x0) {
-            u.xf = 0;
+          if (onCharEnv != null) {
+            onCharEnv!(
+              AssCharTemplateEnv(
+                shared: ctx.shared,
+                basePos: basePos,
+                orgline: d,
+                sourceIndex: i,
+                units: units,
+                unit: u,
+                line: u.defaultDialog,
+                emit: emitter,
+              ),
+            );
           } else {
-            u.xf = (x - x0) / (x1 - x0);
+            emitter.emit(u.defaultDialog);
           }
         }
-      }
-
-      for (final u in units) {
-        if (onCharEnv != null) {
-          onCharEnv!(
-            AssCharTemplateEnv(
-              shared: ctx.shared,
-              basePos: basePos,
-              orgline: d,
-              sourceIndex: i,
-              units: units,
-              unit: u,
-              line: u.defaultDialog,
-              emit: emitter,
-            ),
-          );
-        } else {
-          emitter.emit(u.defaultDialog);
-        }
-      }
-
-      if (out.isNotEmpty && commentOriginal) {
-        d.commented = true;
-        ctx.touchDialog(d);
-      }
-
-      if (out.isNotEmpty) {
-        if (afterSource) {
-          dialogs.insertAll(i + 1, out);
-        } else {
-          globalOut.addAll(out);
-        }
-        generatedTotal += out.length;
-        ctx.log('splitCharsFx: dialog#$i generated=${out.length}');
-      }
-    }
-
-    if (!afterSource && globalOut.isNotEmpty) {
-      switch (outputStrategy.placement) {
-        case AssGeneratedOutputPlacement.appendToEnd:
-          dialogs.addAll(globalOut);
-          break;
-        case AssGeneratedOutputPlacement.prependToStart:
-          dialogs.insertAll(0, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.insertAtIndex:
-          final idx = (outputStrategy.index ?? dialogs.length).clamp(0, dialogs.length);
-          dialogs.insertAll(idx, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.afterSource:
-          break;
-      }
-    }
-
-    ctx.log('splitCharsFx: totalGenerated=$generatedTotal');
+      },
+    );
   }
 }
 
@@ -3378,471 +3564,525 @@ class _AssSplitKaraokeFxOp extends AssAutomationOp {
 
   @override
   Future<void> apply(AssAutomationContext ctx) async {
-    final dialogs = ctx.ensureDialogs().dialogs;
-    final auto = AssAutomation(ctx.ass);
+    await _runGeneratedDialogsOp(
+      ctx: ctx,
+      outputStrategy: outputStrategy,
+      opName: 'splitKaraokeFx',
+      commentOriginal: commentOriginal,
+      commentMode: _CommentOriginalMode.whenGenerated,
+      perDialog: (pctx) async {
+        final d = pctx.dialog;
+        final i = pctx.index;
+        final start = pctx.startMs;
+        final end = pctx.endMs;
+        final baseTagsAss = pctx.baseTagsAss;
+        final basePos = pctx.basePos;
+        final emitter = pctx.emitter;
+        final auto = pctx.auto;
 
-    final afterSource = outputStrategy.placement == AssGeneratedOutputPlacement.afterSource;
-    final indices = ctx.selection.toList()
-      ..sort((a, b) => afterSource ? b.compareTo(a) : a.compareTo(b));
-    int generatedTotal = 0;
-    final globalOut = <AssDialog>[];
-
-    for (final i in indices) {
-      if (i < 0 || i >= dialogs.length) continue;
-      final d = dialogs[i];
-      final start = d.startTime.time;
-      final end = d.endTime.time;
-      if (start == null || end == null || end <= start) continue;
-
-      // Don't mutate/comment lines that aren't actually karaoke.
-      if (!_dialogHasAnyKaraokeTags(d) && !includeNonKaraokeSegments) {
-        continue;
-      }
-
-      final baseTagsAss = _baseTagsAssWithoutKaraoke(d);
-      final basePos = _effectiveBasePosForDialog(d);
-      final out = <AssDialog>[];
-      final emitter = AssFxEmitter(out);
-      final breakLayout = d.line != null ? await _computeBreakLayoutForDialog(d) : const <int, _AssBreakLayout>{};
-
-      // Optional metrics: if the dialog has a pre-extended `line` whose segments
-      // correspond 1:1 with AssText.segments, we can attach widths and x offsets.
-      final line = d.line;
-      final hasSegmentMetrics = line != null && line.segments.length == d.text.segments.length;
-      final segWidth = <double>[];
-      final segHeight = <double>[];
-      final segX = <double>[];
-      final segLineIndex = <int>[];
-      if (hasSegmentMetrics) {
-        double x = 0;
-        int li = 0;
-        for (int si = 0; si < line.segments.length; si++) {
-          final s = line.segments[si];
-          final w = s.width ?? 0;
-          final h = s.height ?? 0;
-          segWidth.add(w);
-          segHeight.add(h);
-          segX.add(x);
-          segLineIndex.add(li);
-
-          // crude line break detection: a segment may contain `\N` or `\n`.
-          // Most karaoke lines keep breaks as their own segment, so this is ok.
-          final rawText = d.text.segments[si].text;
-          if (rawText.contains(r'\N') || rawText.contains(r'\n') || rawText.contains('\n')) {
-            x = 0;
-            li += 1;
-          } else {
-            x += w;
-          }
-        }
-      }
-
-      final rawBlocks = <_AssKaraokeRawBlock>[];
-
-      // Prefer using AssLine.karaoke() when available: it matches karaskel's
-      // "fixed" metrics (pre/core/post spacing widths + core left/center/right).
-      final canUseFixedMetrics = line != null && line.segments.every((s) => s.effectiveStyle != null);
-      if (line != null && canUseFixedMetrics && !includeNonKaraokeSegments) {
-        final blocks = await line.karaoke(useTextData: true);
-        for (final k in blocks) {
-          final durMs = k.durationMs ?? 0;
-          final startOffset = k.startOffsetMs ?? 0;
-          final endOffset = k.endOffsetMs ?? (startOffset + durMs);
-          if (durMs < 0) continue;
-
-          final absStart = start + startOffset;
-          if (absStart >= end) continue;
-          var absEnd = start + endOffset;
-          if (absEnd > end) absEnd = end;
-          if (absEnd <= absStart) continue;
-
-          final segText = _normalizeTextForFx(k.text);
-          if (durMs == 0 && segText.isEmpty) continue;
-
-          rawBlocks.add(
-            _AssKaraokeRawBlock(
-              text: segText,
-              karaokeTag: k.karaokeTag,
-              durMs: durMs,
-              startOffsetMs: startOffset,
-              endOffsetMs: endOffset,
-              absStartMs: absStart,
-              absEndMs: absEnd,
-              effectiveStyle: k.effectiveStyle,
-              width: k.width,
-              height: k.height,
-              prespace: k.prespace,
-              postspace: k.postspace,
-              textSpaceStripped: k.textSpaceStripped,
-              prespaceWidth: k.prespaceWidth,
-              postspaceWidth: k.postspaceWidth,
-              coreWidth: k.coreWidth,
-              lineIndex: k.lineIndex,
-              x: k.x,
-              left: k.left,
-              center: k.center,
-              right: k.right,
-            ),
-          );
-        }
-      } else {
-        // Fallback parser based on AssText segments.
-        //
-        // This is more robust than "one segment = one syllable", because
-        // karaoke timing tags apply until the next karaoke timing tag; inline
-        // style overrides inside the syllable must be merged into the same unit.
-        int cursor = 0;
-        int? curStartOffset;
-        int? curEndOffset;
-        int curDurMs = 0;
-        String? curTagName;
-        StringBuffer curText = StringBuffer();
-        int? curFirstSegIndex;
-        double? curWidth;
-        double? curHeight;
-
-        void flushCurrent() {
-          if (curStartOffset == null || curEndOffset == null) return;
-          final text = curText.toString();
-          if (text.isEmpty && curDurMs == 0) return;
-          final absStart = start + curStartOffset!;
-          var absEnd = start + curEndOffset!;
-          if (absStart >= end) return;
-          if (absEnd > end) absEnd = end;
-          if (absEnd <= absStart) return;
-
-          int? li;
-          double? x;
-          double? w;
-          double? h;
-          if (curFirstSegIndex != null && hasSegmentMetrics) {
-            li = segLineIndex[curFirstSegIndex!];
-            x = segX[curFirstSegIndex!];
-            // Approximate: sum widths of involved segments when available.
-            w = curWidth;
-            h = curHeight;
-          }
-
-          rawBlocks.add(
-            _AssKaraokeRawBlock(
-              text: text,
-              karaokeTag: curTagName,
-              durMs: curDurMs,
-              startOffsetMs: curStartOffset!,
-              endOffsetMs: curEndOffset!,
-              absStartMs: absStart,
-              absEndMs: absEnd,
-              effectiveStyle: null,
-              width: w,
-              height: h,
-              prespace: null,
-              postspace: null,
-              textSpaceStripped: null,
-              prespaceWidth: null,
-              postspaceWidth: null,
-              coreWidth: null,
-              lineIndex: li,
-              x: x,
-              left: x,
-              center: (x != null && w != null) ? (x + w * 0.5) : null,
-              right: (x != null && w != null) ? (x + w) : null,
-            ),
-          );
+        // Don't mutate/comment lines that aren't actually karaoke.
+        if (!_dialogHasAnyKaraokeTags(d) && !includeNonKaraokeSegments) {
+          return;
         }
 
-        void resetCurrent() {
-          curStartOffset = null;
-          curEndOffset = null;
-          curDurMs = 0;
-          curTagName = null;
-          curFirstSegIndex = null;
-          curWidth = null;
-          curHeight = null;
-          curText = StringBuffer();
-        }
+        final breakLayout = d.line != null
+            ? await _computeBreakLayoutForDialog(d)
+            : const <int, _AssBreakLayout>{};
 
-        for (int si = 0; si < d.text.segments.length; si++) {
-          final seg = d.text.segments[si];
-          final segText = _normalizeTextForFx(seg.text);
+        // Optional metrics: if the dialog has a pre-extended `line` whose segments
+        // correspond 1:1 with AssText.segments, we can attach widths and x offsets.
+        final line = d.line;
+        final hasSegmentMetrics =
+            line != null && line.segments.length == d.text.segments.length;
+        final segWidth = <double>[];
+        final segHeight = <double>[];
+        final segX = <double>[];
+        final segLineIndex = <int>[];
+        if (hasSegmentMetrics) {
+          double x = 0;
+          int li = 0;
+          for (int si = 0; si < line.segments.length; si++) {
+            final s = line.segments[si];
+            final w = s.width ?? 0;
+            final h = s.height ?? 0;
+            segWidth.add(w);
+            segHeight.add(h);
+            segX.add(x);
+            segLineIndex.add(li);
 
-          final tags = seg.overrideTags;
-          int? ktCs;
-          int? kCs;
-          String? tagName;
-
-          if (tags != null) {
-            final ktRaw = tags.getTagValue('kt');
-            ktCs = ktRaw != null ? int.tryParse(ktRaw.trim()) : null;
-
-            String? raw;
-            raw = tags.getTagValue('kf');
-            if (raw != null) {
-              tagName = 'kf';
+            // crude line break detection: a segment may contain `\N` or `\n`.
+            // Most karaoke lines keep breaks as their own segment, so this is ok.
+            final rawText = d.text.segments[si].text;
+            if (rawText.contains(r'\N') ||
+                rawText.contains(r'\n') ||
+                rawText.contains('\n')) {
+              x = 0;
+              li += 1;
             } else {
-              raw = tags.getTagValue('ko');
-              if (raw != null) tagName = 'ko';
+              x += w;
             }
-            raw ??= tags.getTagValue('k');
-            tagName ??= raw != null ? 'k' : null;
-            kCs = raw != null ? int.tryParse(raw.trim()) : null;
+          }
+        }
+
+        final rawBlocks = <_AssKaraokeRawBlock>[];
+
+        // Prefer using AssLine.karaoke() when available: it matches karaskel's
+        // "fixed" metrics (pre/core/post spacing widths + core left/center/right).
+        final canUseFixedMetrics =
+            line != null &&
+            line.segments.every((s) => s.effectiveStyle != null);
+        if (line != null && canUseFixedMetrics && !includeNonKaraokeSegments) {
+          final blocks = await line.karaoke(useTextData: true);
+          for (final k in blocks) {
+            final durMs = k.durationMs ?? 0;
+            final startOffset = k.startOffsetMs ?? 0;
+            final endOffset = k.endOffsetMs ?? (startOffset + durMs);
+            if (durMs < 0) continue;
+
+            final absStart = start + startOffset;
+            if (absStart >= end) continue;
+            var absEnd = start + endOffset;
+            if (absEnd > end) absEnd = end;
+            if (absEnd <= absStart) continue;
+
+            final segText = _normalizeTextForFx(k.text);
+            if (durMs == 0 && segText.isEmpty) continue;
+
+            rawBlocks.add(
+              _AssKaraokeRawBlock(
+                text: segText,
+                karaokeTag: k.karaokeTag,
+                durMs: durMs,
+                startOffsetMs: startOffset,
+                endOffsetMs: endOffset,
+                absStartMs: absStart,
+                absEndMs: absEnd,
+                effectiveStyle: k.effectiveStyle,
+                width: k.width,
+                height: k.height,
+                prespace: k.prespace,
+                postspace: k.postspace,
+                textSpaceStripped: k.textSpaceStripped,
+                prespaceWidth: k.prespaceWidth,
+                postspaceWidth: k.postspaceWidth,
+                coreWidth: k.coreWidth,
+                lineIndex: k.lineIndex,
+                x: k.x,
+                left: k.left,
+                center: k.center,
+                right: k.right,
+              ),
+            );
+          }
+        } else {
+          // Fallback parser based on AssText segments.
+          //
+          // This is more robust than "one segment = one syllable", because
+          // karaoke timing tags apply until the next karaoke timing tag; inline
+          // style overrides inside the syllable must be merged into the same unit.
+          int cursor = 0;
+          int? curStartOffset;
+          int? curEndOffset;
+          int curDurMs = 0;
+          String? curTagName;
+          StringBuffer curText = StringBuffer();
+          int? curFirstSegIndex;
+          double? curWidth;
+          double? curHeight;
+
+          void flushCurrent() {
+            if (curStartOffset == null || curEndOffset == null) return;
+            final text = curText.toString();
+            if (text.isEmpty && curDurMs == 0) return;
+            final absStart = start + curStartOffset!;
+            var absEnd = start + curEndOffset!;
+            if (absStart >= end) return;
+            if (absEnd > end) absEnd = end;
+            if (absEnd <= absStart) return;
+
+            int? li;
+            double? x;
+            double? w;
+            double? h;
+            if (curFirstSegIndex != null && hasSegmentMetrics) {
+              li = segLineIndex[curFirstSegIndex!];
+              x = segX[curFirstSegIndex!];
+              // Approximate: sum widths of involved segments when available.
+              w = curWidth;
+              h = curHeight;
+            }
+
+            rawBlocks.add(
+              _AssKaraokeRawBlock(
+                text: text,
+                karaokeTag: curTagName,
+                durMs: curDurMs,
+                startOffsetMs: curStartOffset!,
+                endOffsetMs: curEndOffset!,
+                absStartMs: absStart,
+                absEndMs: absEnd,
+                effectiveStyle: null,
+                width: w,
+                height: h,
+                prespace: null,
+                postspace: null,
+                textSpaceStripped: null,
+                prespaceWidth: null,
+                postspaceWidth: null,
+                coreWidth: null,
+                lineIndex: li,
+                x: x,
+                left: x,
+                center: (x != null && w != null) ? (x + w * 0.5) : null,
+                right: (x != null && w != null) ? (x + w) : null,
+              ),
+            );
           }
 
-          final hasK = kCs != null;
-          if (hasK) {
-            // Start a new timed block.
-            flushCurrent();
-            resetCurrent();
+          void resetCurrent() {
+            curStartOffset = null;
+            curEndOffset = null;
+            curDurMs = 0;
+            curTagName = null;
+            curFirstSegIndex = null;
+            curWidth = null;
+            curHeight = null;
+            curText = StringBuffer();
+          }
 
-            final durMs = kCs * 10;
-            final startOffset = ktCs != null ? (ktCs * 10) : cursor;
-            final endOffset = startOffset + durMs;
-            cursor = ktCs != null ? (endOffset > cursor ? endOffset : cursor) : endOffset;
+          for (int si = 0; si < d.text.segments.length; si++) {
+            final seg = d.text.segments[si];
+            final segText = _normalizeTextForFx(seg.text);
 
-            curStartOffset = startOffset;
-            curEndOffset = endOffset;
-            curDurMs = durMs;
-            curTagName = tagName;
-            curFirstSegIndex = si;
+            final tags = seg.overrideTags;
+            int? ktCs;
+            int? kCs;
+            String? tagName;
 
-            if (hasSegmentMetrics) {
-              curWidth = segWidth[si];
-              curHeight = segHeight[si];
+            if (tags != null) {
+              final ktRaw = tags.getTagValue('kt');
+              ktCs = ktRaw != null ? int.tryParse(ktRaw.trim()) : null;
+
+              String? raw;
+              raw = tags.getTagValue('kf');
+              if (raw != null) {
+                tagName = 'kf';
+              } else {
+                raw = tags.getTagValue('ko');
+                if (raw != null) tagName = 'ko';
+              }
+              raw ??= tags.getTagValue('k');
+              tagName ??= raw != null ? 'k' : null;
+              kCs = raw != null ? int.tryParse(raw.trim()) : null;
             }
 
-            if (segText.isNotEmpty) {
-              curText.write(segText);
-            }
-          } else {
-            // Continuation of the current karaoke block (style tags, etc).
-            if (curStartOffset != null && segText.isNotEmpty) {
-              curText.write(segText);
+            final hasK = kCs != null;
+            if (hasK) {
+              // Start a new timed block.
+              flushCurrent();
+              resetCurrent();
+
+              final durMs = kCs * 10;
+              final startOffset = ktCs != null ? (ktCs * 10) : cursor;
+              final endOffset = startOffset + durMs;
+              cursor = ktCs != null
+                  ? (endOffset > cursor ? endOffset : cursor)
+                  : endOffset;
+
+              curStartOffset = startOffset;
+              curEndOffset = endOffset;
+              curDurMs = durMs;
+              curTagName = tagName;
+              curFirstSegIndex = si;
+
               if (hasSegmentMetrics) {
-                curWidth = (curWidth ?? 0.0) + segWidth[si];
-                curHeight = (curHeight ?? 0.0) > segHeight[si] ? curHeight : segHeight[si];
+                curWidth = segWidth[si];
+                curHeight = segHeight[si];
+              }
+
+              if (segText.isNotEmpty) {
+                curText.write(segText);
+              }
+            } else {
+              // Continuation of the current karaoke block (style tags, etc).
+              if (curStartOffset != null && segText.isNotEmpty) {
+                curText.write(segText);
+                if (hasSegmentMetrics) {
+                  curWidth = (curWidth ?? 0.0) + segWidth[si];
+                  curHeight = (curHeight ?? 0.0) > segHeight[si]
+                      ? curHeight
+                      : segHeight[si];
+                }
               }
             }
           }
+
+          flushCurrent();
         }
 
-        flushCurrent();
-      }
-
-      // If this line has no karaoke tags but the caller explicitly asked to
-      // include non-karaoke content, treat the whole line as a single unit.
-      if (rawBlocks.isEmpty && includeNonKaraokeSegments) {
-        final raw = d.text.segments.map((s) => s.text).join();
-        final normalized = _normalizeTextForFx(raw);
-        if (normalized.isNotEmpty) {
-          rawBlocks.add(
-            _AssKaraokeRawBlock(
-              text: normalized,
-              karaokeTag: null,
-              durMs: end - start,
-              startOffsetMs: 0,
-              endOffsetMs: end - start,
-              absStartMs: start,
-              absEndMs: end,
-              effectiveStyle: null,
-              width: null,
-              height: null,
-              prespace: null,
-              postspace: null,
-              textSpaceStripped: null,
-              prespaceWidth: null,
-              postspaceWidth: null,
-              coreWidth: null,
-              lineIndex: null,
-              x: null,
-              left: null,
-              center: null,
-              right: null,
-            ),
-          );
+        // If this line has no karaoke tags but the caller explicitly asked to
+        // include non-karaoke content, treat the whole line as a single unit.
+        if (rawBlocks.isEmpty && includeNonKaraokeSegments) {
+          final raw = d.text.segments.map((s) => s.text).join();
+          final normalized = _normalizeTextForFx(raw);
+          if (normalized.isNotEmpty) {
+            rawBlocks.add(
+              _AssKaraokeRawBlock(
+                text: normalized,
+                karaokeTag: null,
+                durMs: end - start,
+                startOffsetMs: 0,
+                endOffsetMs: end - start,
+                absStartMs: start,
+                absEndMs: end,
+                effectiveStyle: null,
+                width: null,
+                height: null,
+                prespace: null,
+                postspace: null,
+                textSpaceStripped: null,
+                prespaceWidth: null,
+                postspaceWidth: null,
+                coreWidth: null,
+                lineIndex: null,
+                x: null,
+                left: null,
+                center: null,
+                right: null,
+              ),
+            );
+          }
         }
-      }
 
-      String displayTextFrom(_AssKaraokeRawBlock b, {required bool stripHighlightPrefix}) {
-        if (!stripHighlightPrefix) return b.text;
-        final pre = b.prespace ?? '';
-        final post = b.postspace ?? '';
-        final core = (b.textSpaceStripped ?? b.text).trim();
-        if (core.isEmpty) return b.text;
-        final first = core[0];
-        if (first != '#' && first != '＃') return b.text;
-        final strippedCore = core.length > 1 ? core.substring(1) : '';
-        return _normalizeTextForFx('$pre$strippedCore$post');
-      }
+        String displayTextFrom(
+          _AssKaraokeRawBlock b, {
+          required bool stripHighlightPrefix,
+        }) {
+          if (!stripHighlightPrefix) return b.text;
+          final pre = b.prespace ?? '';
+          final post = b.postspace ?? '';
+          final core = (b.textSpaceStripped ?? b.text).trim();
+          if (core.isEmpty) return b.text;
+          final first = core[0];
+          if (first != '#' && first != '＃') return b.text;
+          final strippedCore = core.length > 1 ? core.substring(1) : '';
+          return _normalizeTextForFx('$pre$strippedCore$post');
+        }
 
-      bool isExtraHighlight(_AssKaraokeRawBlock b) {
-        final core = (b.textSpaceStripped ?? b.text).trim();
-        if (core.isEmpty) return false;
-        final first = core[0];
-        return first == '#' || first == '＃';
-      }
+        bool isExtraHighlight(_AssKaraokeRawBlock b) {
+          final core = (b.textSpaceStripped ?? b.text).trim();
+          if (core.isEmpty) return false;
+          final first = core[0];
+          return first == '#' || first == '＃';
+        }
 
-      final units = <AssKaraokeUnit>[];
+        final units = <AssKaraokeUnit>[];
 
-      if (mode == AssKaraokeSplitMode.blocks) {
-        int bi = 0;
-        for (final b in rawBlocks) {
-          final textAss = '$baseTagsAss${_escapeAssText(b.text)}';
-          final fx = auto.createDialog(
-            startMs: b.absStartMs,
-            endMs: b.absEndMs,
-            styleName: d.styleName,
-            layer: d.layer + layerOffset,
-            name: d.name,
-            marginL: d.marginL,
-            marginR: d.marginR,
-            marginV: d.marginV,
-            effect: 'fx',
-            commented: false,
-            textAss: textAss,
-          );
-          if (preserveInlineStyle) {
-            final tags = _ensureLeadingOverrideTags(fx.text);
-            _applyEffectiveStyleOverrides(tags: tags, base: d.style, effectiveStyle: b.effectiveStyle);
+        if (mode == AssKaraokeSplitMode.blocks) {
+          int bi = 0;
+          for (final b in rawBlocks) {
+            final textAss = '$baseTagsAss${_escapeAssText(b.text)}';
+            final fx = auto.createDialog(
+              startMs: b.absStartMs,
+              endMs: b.absEndMs,
+              styleName: d.styleName,
+              layer: d.layer + layerOffset,
+              name: d.name,
+              marginL: d.marginL,
+              marginR: d.marginR,
+              marginV: d.marginV,
+              effect: 'fx',
+              commented: false,
+              textAss: textAss,
+            );
+            if (preserveInlineStyle) {
+              final tags = _ensureLeadingOverrideTags(fx.text);
+              _applyEffectiveStyleOverrides(
+                tags: tags,
+                base: d.style,
+                effectiveStyle: b.effectiveStyle,
+              );
+            }
+
+            final bl = b.lineIndex != null ? breakLayout[b.lineIndex!] : null;
+            final absX = (bl != null && b.x != null) ? (bl.left + b.x!) : null;
+            final absLeft = (bl != null && b.left != null)
+                ? (bl.left + b.left!)
+                : null;
+            final absCenter = (bl != null && b.center != null)
+                ? (bl.left + b.center!)
+                : null;
+            final absRight = (bl != null && b.right != null)
+                ? (bl.left + b.right!)
+                : null;
+
+            units.add(
+              AssKaraokeUnit(
+                source: d,
+                sourceIndex: i,
+                blockIndex: bi,
+                text: b.text,
+                karaokeTag: b.karaokeTag,
+                durMs: b.durMs,
+                absStartMs: b.absStartMs,
+                absEndMs: b.absEndMs,
+                highlights: [
+                  AssKaraokeHighlight(
+                    startOffsetMs: b.startOffsetMs,
+                    endOffsetMs: b.endOffsetMs,
+                    karaokeTag: b.karaokeTag,
+                  ),
+                ],
+                baseTagsAss: baseTagsAss,
+                defaultDialog: fx,
+                width: b.width,
+                height: b.height,
+                prespace: b.prespace,
+                postspace: b.postspace,
+                textSpaceStripped: b.textSpaceStripped,
+                prespaceWidth: b.prespaceWidth,
+                postspaceWidth: b.postspaceWidth,
+                coreWidth: b.coreWidth,
+                lineIndex: b.lineIndex,
+                x: b.x,
+                left: b.left,
+                center: b.center,
+                right: b.right,
+                absX: absX ?? basePos.pos.x,
+                absLeft: absLeft ?? basePos.pos.x,
+                absCenter: absCenter ?? basePos.pos.x,
+                absRight: absRight ?? basePos.pos.x,
+                absTop: bl?.top ?? basePos.pos.y,
+                absMiddle: bl?.middle ?? basePos.pos.y,
+                absBottom: bl?.bottom ?? basePos.pos.y,
+                effectiveStyle: b.effectiveStyle,
+              ),
+            );
+
+            bi++;
+          }
+        } else {
+          // Syllable mode: merge extra highlight blocks (`#` prefix) into the
+          // previous unit (multi-highlight).
+          int bi = 0;
+          _AssKaraokeRawBlock? seed;
+          final highlights = <AssKaraokeHighlight>[];
+          int absStartMs = 0;
+          int absEndMs = 0;
+          String? tagName;
+
+          void flushSyllable() {
+            if (seed == null) return;
+            final seedBlock = seed!;
+            final displayText = displayTextFrom(
+              seedBlock,
+              stripHighlightPrefix: true,
+            );
+            final totalDurMs = highlights.fold<int>(
+              0,
+              (p, h) => p + h.durationMs,
+            );
+
+            final textAss = '$baseTagsAss${_escapeAssText(displayText)}';
+            final fx = auto.createDialog(
+              startMs: absStartMs,
+              endMs: absEndMs,
+              styleName: d.styleName,
+              layer: d.layer + layerOffset,
+              name: d.name,
+              marginL: d.marginL,
+              marginR: d.marginR,
+              marginV: d.marginV,
+              effect: 'fx',
+              commented: false,
+              textAss: textAss,
+            );
+            if (preserveInlineStyle) {
+              final tags = _ensureLeadingOverrideTags(fx.text);
+              _applyEffectiveStyleOverrides(
+                tags: tags,
+                base: d.style,
+                effectiveStyle: seedBlock.effectiveStyle,
+              );
+            }
+
+            final bl = seedBlock.lineIndex != null
+                ? breakLayout[seedBlock.lineIndex!]
+                : null;
+            final absX = (bl != null && seedBlock.x != null)
+                ? (bl.left + seedBlock.x!)
+                : null;
+            final absLeft = (bl != null && seedBlock.left != null)
+                ? (bl.left + seedBlock.left!)
+                : null;
+            final absCenter = (bl != null && seedBlock.center != null)
+                ? (bl.left + seedBlock.center!)
+                : null;
+            final absRight = (bl != null && seedBlock.right != null)
+                ? (bl.left + seedBlock.right!)
+                : null;
+
+            units.add(
+              AssKaraokeUnit(
+                source: d,
+                sourceIndex: i,
+                blockIndex: bi,
+                text: displayText,
+                karaokeTag: tagName,
+                durMs: totalDurMs,
+                absStartMs: absStartMs,
+                absEndMs: absEndMs,
+                highlights: List<AssKaraokeHighlight>.unmodifiable(highlights),
+                baseTagsAss: baseTagsAss,
+                defaultDialog: fx,
+                width: seedBlock.width,
+                height: seedBlock.height,
+                prespace: seedBlock.prespace,
+                postspace: seedBlock.postspace,
+                textSpaceStripped: seedBlock.textSpaceStripped,
+                prespaceWidth: seedBlock.prespaceWidth,
+                postspaceWidth: seedBlock.postspaceWidth,
+                coreWidth: seedBlock.coreWidth,
+                lineIndex: seedBlock.lineIndex,
+                x: seedBlock.x,
+                left: seedBlock.left,
+                center: seedBlock.center,
+                right: seedBlock.right,
+                absX: absX ?? basePos.pos.x,
+                absLeft: absLeft ?? basePos.pos.x,
+                absCenter: absCenter ?? basePos.pos.x,
+                absRight: absRight ?? basePos.pos.x,
+                absTop: bl?.top ?? basePos.pos.y,
+                absMiddle: bl?.middle ?? basePos.pos.y,
+                absBottom: bl?.bottom ?? basePos.pos.y,
+                effectiveStyle: seedBlock.effectiveStyle,
+              ),
+            );
+
+            bi++;
+            seed = null;
+            highlights.clear();
           }
 
-          final bl = b.lineIndex != null ? breakLayout[b.lineIndex!] : null;
-          final absX = (bl != null && b.x != null) ? (bl.left + b.x!) : null;
-          final absLeft = (bl != null && b.left != null) ? (bl.left + b.left!) : null;
-          final absCenter = (bl != null && b.center != null) ? (bl.left + b.center!) : null;
-          final absRight = (bl != null && b.right != null) ? (bl.left + b.right!) : null;
-
-          units.add(
-            AssKaraokeUnit(
-              source: d,
-              sourceIndex: i,
-              blockIndex: bi,
-              text: b.text,
-              karaokeTag: b.karaokeTag,
-              durMs: b.durMs,
-              absStartMs: b.absStartMs,
-              absEndMs: b.absEndMs,
-              highlights: [
+          for (final b in rawBlocks) {
+            final extra = isExtraHighlight(b);
+            if (extra && seed != null) {
+              highlights.add(
                 AssKaraokeHighlight(
                   startOffsetMs: b.startOffsetMs,
                   endOffsetMs: b.endOffsetMs,
                   karaokeTag: b.karaokeTag,
                 ),
-              ],
-              baseTagsAss: baseTagsAss,
-              defaultDialog: fx,
-              width: b.width,
-              height: b.height,
-              prespace: b.prespace,
-              postspace: b.postspace,
-              textSpaceStripped: b.textSpaceStripped,
-              prespaceWidth: b.prespaceWidth,
-              postspaceWidth: b.postspaceWidth,
-              coreWidth: b.coreWidth,
-              lineIndex: b.lineIndex,
-              x: b.x,
-              left: b.left,
-              center: b.center,
-              right: b.right,
-              absX: absX ?? basePos.pos.x,
-              absLeft: absLeft ?? basePos.pos.x,
-              absCenter: absCenter ?? basePos.pos.x,
-              absRight: absRight ?? basePos.pos.x,
-              absTop: bl?.top ?? basePos.pos.y,
-              absMiddle: bl?.middle ?? basePos.pos.y,
-              absBottom: bl?.bottom ?? basePos.pos.y,
-              effectiveStyle: b.effectiveStyle,
-            ),
-          );
+              );
+              if (b.absEndMs > absEndMs) absEndMs = b.absEndMs;
+              continue;
+            }
 
-          bi++;
-        }
-      } else {
-        // Syllable mode: merge extra highlight blocks (`#` prefix) into the
-        // previous unit (multi-highlight).
-        int bi = 0;
-        _AssKaraokeRawBlock? seed;
-        final highlights = <AssKaraokeHighlight>[];
-        int absStartMs = 0;
-        int absEndMs = 0;
-        int startOffsetMs = 0;
-        int endOffsetMs = 0;
-        String? tagName;
-
-        void flushSyllable() {
-          if (seed == null) return;
-          final seedBlock = seed!;
-          final displayText = displayTextFrom(seedBlock, stripHighlightPrefix: true);
-          final totalDurMs = highlights.fold<int>(0, (p, h) => p + h.durationMs);
-
-          final textAss = '$baseTagsAss${_escapeAssText(displayText)}';
-          final fx = auto.createDialog(
-            startMs: absStartMs,
-            endMs: absEndMs,
-            styleName: d.styleName,
-            layer: d.layer + layerOffset,
-            name: d.name,
-            marginL: d.marginL,
-            marginR: d.marginR,
-            marginV: d.marginV,
-            effect: 'fx',
-            commented: false,
-            textAss: textAss,
-          );
-          if (preserveInlineStyle) {
-            final tags = _ensureLeadingOverrideTags(fx.text);
-            _applyEffectiveStyleOverrides(tags: tags, base: d.style, effectiveStyle: seedBlock.effectiveStyle);
-          }
-
-          final bl = seedBlock.lineIndex != null ? breakLayout[seedBlock.lineIndex!] : null;
-          final absX = (bl != null && seedBlock.x != null) ? (bl.left + seedBlock.x!) : null;
-          final absLeft = (bl != null && seedBlock.left != null) ? (bl.left + seedBlock.left!) : null;
-          final absCenter = (bl != null && seedBlock.center != null) ? (bl.left + seedBlock.center!) : null;
-          final absRight = (bl != null && seedBlock.right != null) ? (bl.left + seedBlock.right!) : null;
-
-          units.add(
-            AssKaraokeUnit(
-              source: d,
-              sourceIndex: i,
-              blockIndex: bi,
-              text: displayText,
-              karaokeTag: tagName,
-              durMs: totalDurMs,
-              absStartMs: absStartMs,
-              absEndMs: absEndMs,
-              highlights: List<AssKaraokeHighlight>.unmodifiable(highlights),
-              baseTagsAss: baseTagsAss,
-              defaultDialog: fx,
-              width: seedBlock.width,
-              height: seedBlock.height,
-              prespace: seedBlock.prespace,
-              postspace: seedBlock.postspace,
-              textSpaceStripped: seedBlock.textSpaceStripped,
-              prespaceWidth: seedBlock.prespaceWidth,
-              postspaceWidth: seedBlock.postspaceWidth,
-              coreWidth: seedBlock.coreWidth,
-              lineIndex: seedBlock.lineIndex,
-              x: seedBlock.x,
-              left: seedBlock.left,
-              center: seedBlock.center,
-              right: seedBlock.right,
-              absX: absX ?? basePos.pos.x,
-              absLeft: absLeft ?? basePos.pos.x,
-              absCenter: absCenter ?? basePos.pos.x,
-              absRight: absRight ?? basePos.pos.x,
-              absTop: bl?.top ?? basePos.pos.y,
-              absMiddle: bl?.middle ?? basePos.pos.y,
-              absBottom: bl?.bottom ?? basePos.pos.y,
-              effectiveStyle: seedBlock.effectiveStyle,
-            ),
-          );
-
-          bi++;
-          seed = null;
-          highlights.clear();
-        }
-
-        for (final b in rawBlocks) {
-          final extra = isExtraHighlight(b);
-          if (extra && seed != null) {
+            flushSyllable();
+            seed = b;
+            tagName = b.karaokeTag;
+            absStartMs = b.absStartMs;
+            absEndMs = b.absEndMs;
             highlights.add(
               AssKaraokeHighlight(
                 startOffsetMs: b.startOffsetMs,
@@ -3850,100 +4090,39 @@ class _AssSplitKaraokeFxOp extends AssAutomationOp {
                 karaokeTag: b.karaokeTag,
               ),
             );
-            if (b.absEndMs > absEndMs) absEndMs = b.absEndMs;
-            if (b.endOffsetMs > endOffsetMs) endOffsetMs = b.endOffsetMs;
-            continue;
           }
 
           flushSyllable();
-          seed = b;
-          tagName = b.karaokeTag;
-          absStartMs = b.absStartMs;
-          absEndMs = b.absEndMs;
-          startOffsetMs = b.startOffsetMs;
-          endOffsetMs = b.endOffsetMs;
-          highlights.add(
-            AssKaraokeHighlight(
-              startOffsetMs: b.startOffsetMs,
-              endOffsetMs: b.endOffsetMs,
-              karaokeTag: b.karaokeTag,
-            ),
-          );
         }
 
-        flushSyllable();
-      }
+        _assignTfAndXf<AssKaraokeUnit>(
+          units: units,
+          setTf: (u, tf) => u.tf = tf,
+          setXf: (u, xf) => u.xf = xf,
+          getAbsCenter: (u) => u.absCenter,
+          getCenter: (u) => u.center,
+        );
 
-      for (int ui = 0; ui < units.length; ui++) {
-        final u = units[ui];
-        u.tf = units.length <= 1 ? 0 : ui / (units.length - 1);
-      }
-      if (units.isNotEmpty) {
-        final x0 = units.first.absCenter ?? units.first.center;
-        final x1 = units.last.absCenter ?? units.last.center;
         for (final u in units) {
-          final x = u.absCenter ?? u.center;
-          if (x0 == null || x1 == null || x == null || x1 == x0) {
-            u.xf = 0;
+          if (onKaraokeEnv != null) {
+            onKaraokeEnv!(
+              AssKaraokeTemplateEnv(
+                shared: ctx.shared,
+                basePos: basePos,
+                orgline: d,
+                sourceIndex: i,
+                units: units,
+                unit: u,
+                line: u.defaultDialog,
+                emit: emitter,
+              ),
+            );
           } else {
-            u.xf = (x - x0) / (x1 - x0);
+            emitter.emit(u.defaultDialog);
           }
         }
-      }
-
-      for (final u in units) {
-        if (onKaraokeEnv != null) {
-          onKaraokeEnv!(
-            AssKaraokeTemplateEnv(
-              shared: ctx.shared,
-              basePos: basePos,
-              orgline: d,
-              sourceIndex: i,
-              units: units,
-              unit: u,
-              line: u.defaultDialog,
-              emit: emitter,
-            ),
-          );
-        } else {
-          emitter.emit(u.defaultDialog);
-        }
-      }
-
-      if (out.isNotEmpty && commentOriginal) {
-        d.commented = true;
-        ctx.touchDialog(d);
-      }
-
-      if (out.isNotEmpty) {
-        if (afterSource) {
-          dialogs.insertAll(i + 1, out);
-        } else {
-          globalOut.addAll(out);
-        }
-        generatedTotal += out.length;
-        ctx.log('splitKaraokeFx: dialog#$i generated=${out.length}');
-      }
-    }
-
-    if (!afterSource && globalOut.isNotEmpty) {
-      switch (outputStrategy.placement) {
-        case AssGeneratedOutputPlacement.appendToEnd:
-          dialogs.addAll(globalOut);
-          break;
-        case AssGeneratedOutputPlacement.prependToStart:
-          dialogs.insertAll(0, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.insertAtIndex:
-          final idx = (outputStrategy.index ?? dialogs.length).clamp(0, dialogs.length);
-          dialogs.insertAll(idx, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.afterSource:
-          break;
-      }
-    }
-
-    ctx.log('splitKaraokeFx: totalGenerated=$generatedTotal');
+      },
+    );
   }
 }
 
@@ -3967,153 +4146,117 @@ class _AssSplitLineFbfFxOp extends AssAutomationOp {
   });
 
   static int _frameFromMs(int ms, double frameMs) => (ms / frameMs).floor();
-  static int _msFromFrame(int frame, double frameMs) => (frame * frameMs).round();
+  static int _msFromFrame(int frame, double frameMs) =>
+      (frame * frameMs).round();
 
   @override
   Future<void> apply(AssAutomationContext ctx) async {
     if (fps <= 0) throw ArgumentError('fps must be > 0');
     if (stepFrames <= 0) throw ArgumentError('stepFrames must be >= 1');
 
-    final dialogs = ctx.ensureDialogs().dialogs;
-    final auto = AssAutomation(ctx.ass);
     final frameMs = 1000.0 / fps;
+    await _runGeneratedDialogsOp(
+      ctx: ctx,
+      outputStrategy: outputStrategy,
+      opName: 'splitLineFbfFx',
+      commentOriginal: commentOriginal,
+      commentMode: _CommentOriginalMode.always,
+      perDialog: (pctx) async {
+        final d = pctx.dialog;
+        final i = pctx.index;
+        final start = pctx.startMs;
+        final end = pctx.endMs;
+        final baseTagsAss = pctx.baseTagsAss;
+        final basePos = pctx.basePos;
+        final emitter = pctx.emitter;
+        final auto = pctx.auto;
 
-    final afterSource = outputStrategy.placement == AssGeneratedOutputPlacement.afterSource;
-    final indices = ctx.selection.toList()
-      ..sort((a, b) => afterSource ? b.compareTo(a) : a.compareTo(b));
-    int generatedTotal = 0;
-    final globalOut = <AssDialog>[];
+        final String textAss;
+        if (preserveOriginalText) {
+          textAss = d.text.getAss();
+        } else {
+          final raw = d.text.segments.map((s) => s.text).join();
+          final normalized = _normalizeTextForFx(raw);
+          textAss = '$baseTagsAss${_escapeAssText(normalized)}';
+        }
 
-    for (final i in indices) {
-      if (i < 0 || i >= dialogs.length) continue;
-      final d = dialogs[i];
-      final start = d.startTime.time;
-      final end = d.endTime.time;
-      if (start == null || end == null || end <= start) continue;
+        final firstFrame = _frameFromMs(start, frameMs);
+        final lastFrameExclusive = (end / frameMs).ceil();
+        final totalFrames = (lastFrameExclusive - firstFrame).clamp(0, 1 << 30);
+        if (totalFrames <= 0) return;
 
-      final baseTagsAss = _baseTagsAssWithoutKaraoke(d);
-      final String textAss;
-      if (preserveOriginalText) {
-        textAss = d.text.getAss();
-      } else {
-        final raw = d.text.segments.map((s) => s.text).join();
-        final normalized = _normalizeTextForFx(raw);
-        textAss = '$baseTagsAss${_escapeAssText(normalized)}';
-      }
+        final units = <AssFrameUnit>[];
 
-      final firstFrame = _frameFromMs(start, frameMs);
-      final lastFrameExclusive = (end / frameMs).ceil();
-      final totalFrames = (lastFrameExclusive - firstFrame).clamp(0, 1 << 30);
-      if (totalFrames <= 0) continue;
+        int si = 0;
+        for (int f = firstFrame; f < lastFrameExclusive; f += stepFrames) {
+          final f2 = (f + stepFrames) > lastFrameExclusive
+              ? lastFrameExclusive
+              : (f + stepFrames);
 
-      final out = <AssDialog>[];
-      final emitter = AssFxEmitter(out);
-      final units = <AssFrameUnit>[];
+          var absStart = _msFromFrame(f, frameMs);
+          var absEnd = _msFromFrame(f2, frameMs);
 
-      int si = 0;
-      for (int f = firstFrame; f < lastFrameExclusive; f += stepFrames) {
-        final f2 = (f + stepFrames) > lastFrameExclusive ? lastFrameExclusive : (f + stepFrames);
+          if (absStart < start) absStart = start;
+          if (absEnd > end) absEnd = end;
+          if (absEnd <= absStart) continue;
 
-        var absStart = _msFromFrame(f, frameMs);
-        var absEnd = _msFromFrame(f2, frameMs);
+          final mid = absStart + ((absEnd - absStart) ~/ 2);
 
-        if (absStart < start) absStart = start;
-        if (absEnd > end) absEnd = end;
-        if (absEnd <= absStart) continue;
+          final fx = auto.createDialog(
+            startMs: absStart,
+            endMs: absEnd,
+            styleName: d.styleName,
+            layer: d.layer + layerOffset,
+            name: d.name,
+            marginL: d.marginL,
+            marginR: d.marginR,
+            marginV: d.marginV,
+            effect: 'fx',
+            commented: false,
+            textAss: textAss,
+          );
 
-        final mid = absStart + ((absEnd - absStart) ~/ 2);
-
-        final fx = auto.createDialog(
-          startMs: absStart,
-          endMs: absEnd,
-          styleName: d.styleName,
-          layer: d.layer + layerOffset,
-          name: d.name,
-          marginL: d.marginL,
-          marginR: d.marginR,
-          marginV: d.marginV,
-          effect: 'fx',
-          commented: false,
-          textAss: textAss,
-        );
-
-        units.add(
-          AssFrameUnit(
-            source: d,
-            sourceIndex: i,
-            stepIndex: si,
-            frameStart: f,
-            frameEnd: f2,
-            frameCount: totalFrames,
-            fps: fps,
-            absStartMs: absStart,
-            absEndMs: absEnd,
-            midMs: mid,
-            baseTagsAss: baseTagsAss,
-            defaultDialog: fx,
-          ),
-        );
-        si++;
-      }
-
-      for (int ui = 0; ui < units.length; ui++) {
-        final u = units[ui];
-        u.tf = units.length <= 1 ? 0 : ui / (units.length - 1);
-      }
-
-      for (final u in units) {
-        if (onFrameEnv != null) {
-          onFrameEnv!(
-            AssFrameTemplateEnv(
-              shared: ctx.shared,
-              basePos: _effectiveBasePosForDialog(d),
-              orgline: d,
+          units.add(
+            AssFrameUnit(
+              source: d,
               sourceIndex: i,
-              units: units,
-              unit: u,
-              line: u.defaultDialog,
-              emit: emitter,
+              stepIndex: si,
+              frameStart: f,
+              frameEnd: f2,
+              frameCount: totalFrames,
+              fps: fps,
+              absStartMs: absStart,
+              absEndMs: absEnd,
+              midMs: mid,
+              baseTagsAss: baseTagsAss,
+              defaultDialog: fx,
             ),
           );
-        } else {
-          emitter.emit(u.defaultDialog);
+          si++;
         }
-      }
 
-      if (commentOriginal) {
-        d.commented = true;
-        ctx.touchDialog(d);
-      }
+        _assignTf<AssFrameUnit>(units, (u, tf) => u.tf = tf);
 
-      if (out.isNotEmpty) {
-        if (afterSource) {
-          dialogs.insertAll(i + 1, out);
-        } else {
-          globalOut.addAll(out);
+        for (final u in units) {
+          if (onFrameEnv != null) {
+            onFrameEnv!(
+              AssFrameTemplateEnv(
+                shared: ctx.shared,
+                basePos: basePos,
+                orgline: d,
+                sourceIndex: i,
+                units: units,
+                unit: u,
+                line: u.defaultDialog,
+                emit: emitter,
+              ),
+            );
+          } else {
+            emitter.emit(u.defaultDialog);
+          }
         }
-        generatedTotal += out.length;
-      }
-      ctx.log('splitLineFbfFx: dialog#$i fps=$fps stepFrames=$stepFrames generated=${out.length}');
-    }
-
-    if (!afterSource && globalOut.isNotEmpty) {
-      switch (outputStrategy.placement) {
-        case AssGeneratedOutputPlacement.appendToEnd:
-          dialogs.addAll(globalOut);
-          break;
-        case AssGeneratedOutputPlacement.prependToStart:
-          dialogs.insertAll(0, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.insertAtIndex:
-          final idx = (outputStrategy.index ?? dialogs.length).clamp(0, dialogs.length);
-          dialogs.insertAll(idx, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.afterSource:
-          break;
-      }
-    }
-
-    ctx.log('splitLineFbfFx: totalGenerated=$generatedTotal');
+      },
+    );
   }
 }
 
@@ -4134,426 +4277,458 @@ class _AssOnShapeExpandOp extends AssAutomationOp {
 
   @override
   Future<void> apply(AssAutomationContext ctx) async {
-    final dialogs = ctx.ensureDialogs().dialogs;
-    final afterSource = outputStrategy.placement == AssGeneratedOutputPlacement.afterSource;
-    final indices = ctx.selection.toList()
-      ..sort((a, b) => afterSource ? b.compareTo(a) : a.compareTo(b));
-    int generatedTotal = 0;
-    final globalOut = <AssDialog>[];
+    await _runGeneratedDialogsOp(
+      ctx: ctx,
+      outputStrategy: outputStrategy,
+      opName: 'onShapeExpand',
+      commentOriginal: commentOriginal,
+      commentMode: _CommentOriginalMode.whenGenerated,
+      perDialog: (pctx) async {
+        final d = pctx.dialog;
+        final i = pctx.index;
+        final start = pctx.startMs;
+        final end = pctx.endMs;
+        final basePos = pctx.basePos;
+        final emitter = pctx.emitter;
 
-    for (final i in indices) {
-      if (i < 0 || i >= dialogs.length) continue;
-      final d = dialogs[i];
-      final start = d.startTime.time;
-      final end = d.endTime.time;
-      if (start == null || end == null || end <= start) continue;
+        // Expand appearance while preserving original multi-line layout:
+        // - First compute visual line breaks for the whole line.
+        // - Then expand each tag-segment piece inside each visual line.
+        final align = _effectiveAlignForDialog(d);
+        final baseStyleState = AssTextStyleState.fromStyle(d.style);
+        var state = baseStyleState.copy();
 
-      final basePos = _effectiveBasePosForDialog(d);
-      // Expand appearance while preserving original multi-line layout:
-      // - First compute visual line breaks for the whole line.
-      // - Then expand each tag-segment piece inside each visual line.
-      final align = _effectiveAlignForDialog(d);
-      final baseStyleState = AssTextStyleState.fromStyle(d.style);
-      var state = baseStyleState.copy();
+        // Transform state (persistent across segments).
+        double fax = 0.0;
+        double fay = 0.0;
+        double frx = 0.0;
+        double fry = 0.0;
+        double frz = d.style.angle;
+        double shad = d.style.shadow;
+        double xshad = shad;
+        double yshad = shad;
+        bool xshadExplicit = false;
+        bool yshadExplicit = false;
+        int p = 1;
 
-      // Transform state (persistent across segments).
-      double fax = 0.0;
-      double fay = 0.0;
-      double frx = 0.0;
-      double fry = 0.0;
-      double frz = d.style.angle;
-      double shad = d.style.shadow;
-      double xshad = shad;
-      double yshad = shad;
-      bool xshadExplicit = false;
-      bool yshadExplicit = false;
-      int p = 1;
+        AssTagPosition org = basePos.pos;
+        bool orgExplicit = false;
 
-      AssTagPosition org = basePos.pos;
-      bool orgExplicit = false;
-
-      // Visual lines built from pieces. Each piece holds the *effective* style and transform state.
-      final visualLines = <List<({int segmentIndex, String text, AssTextStyleState style, double fax, double fay, double frx, double fry, double frz, double xshad, double yshad, int p, AssTagPosition org, bool orgExplicit})>>[];
-      final visualLineStates = <AssTextStyleState>[];
-      visualLines.add([]);
-      visualLineStates.add(state.copy());
-
-      void startNewVisualLine() {
+        // Visual lines built from pieces. Each piece holds the *effective* style and transform state.
+        final visualLines =
+            <
+              List<
+                ({
+                  int segmentIndex,
+                  String text,
+                  AssTextStyleState style,
+                  double fax,
+                  double fay,
+                  double frx,
+                  double fry,
+                  double frz,
+                  double xshad,
+                  double yshad,
+                  int p,
+                  AssTagPosition org,
+                  bool orgExplicit,
+                })
+              >
+            >[];
+        final visualLineStates = <AssTextStyleState>[];
         visualLines.add([]);
         visualLineStates.add(state.copy());
-      }
 
-      for (int si = 0; si < d.text.segments.length; si++) {
-        final seg = d.text.segments[si];
-        final t = seg.overrideTags;
-        if (t != null) {
-          // Handle \rStyleName by resetting to that style when possible.
-          // This is important for font changes like \fn which are often applied via \r.
-          final r = t.getTagValue('r');
-          if (r != null) {
-            final styleName = r.trim();
-            AssStyle resetStyle;
-            if (styleName.isEmpty) {
-              resetStyle = d.style;
-            } else {
-              try {
-                resetStyle = ctx.styleByName(styleName);
-              } catch (_) {
+        void startNewVisualLine() {
+          visualLines.add([]);
+          visualLineStates.add(state.copy());
+        }
+
+        for (int si = 0; si < d.text.segments.length; si++) {
+          final seg = d.text.segments[si];
+          final t = seg.overrideTags;
+          if (t != null) {
+            // Handle \rStyleName by resetting to that style when possible.
+            // This is important for font changes like \fn which are often applied via \r.
+            final r = t.getTagValue('r');
+            if (r != null) {
+              final styleName = r.trim();
+              AssStyle resetStyle;
+              if (styleName.isEmpty) {
                 resetStyle = d.style;
+              } else {
+                try {
+                  resetStyle = ctx.styleByName(styleName);
+                } catch (_) {
+                  resetStyle = d.style;
+                }
               }
+              final resetTo = AssTextStyleState.fromStyle(resetStyle);
+              state = resetTo.copy();
+              state.applyOverrideTags(t, resetTo: resetTo);
+            } else {
+              state.applyOverrideTags(t, resetTo: baseStyleState);
             }
-            final resetTo = AssTextStyleState.fromStyle(resetStyle);
-            state = resetTo.copy();
-            state.applyOverrideTags(t, resetTo: resetTo);
-          } else {
-            state.applyOverrideTags(t, resetTo: baseStyleState);
+
+            final orgTag = t.originalPosition;
+            if (orgTag != null) {
+              org = orgTag;
+              orgExplicit = true;
+            }
+
+            final vFax = _parseTagDouble(t, 'fax');
+            if (vFax != null) fax = vFax;
+            final vFay = _parseTagDouble(t, 'fay');
+            if (vFay != null) fay = vFay;
+            final vFrx = _parseTagDouble(t, 'frx');
+            if (vFrx != null) frx = vFrx;
+            final vFry = _parseTagDouble(t, 'fry');
+            if (vFry != null) fry = vFry;
+            final vFrz = _parseTagDouble(t, 'frz');
+            if (vFrz != null) frz = vFrz;
+
+            final vShad = _parseTagDouble(t, 'shad');
+            if (vShad != null) {
+              shad = vShad;
+              if (!xshadExplicit) xshad = shad;
+              if (!yshadExplicit) yshad = shad;
+            }
+            final vXshad = _parseTagDouble(t, 'xshad');
+            if (vXshad != null) {
+              xshad = vXshad;
+              xshadExplicit = true;
+            }
+            final vYshad = _parseTagDouble(t, 'yshad');
+            if (vYshad != null) {
+              yshad = vYshad;
+              yshadExplicit = true;
+            }
+
+            final vP = _parseTagInt(t, 'p');
+            if (vP != null) p = vP;
           }
 
-          final orgTag = t.originalPosition;
-          if (orgTag != null) {
-            org = orgTag;
-            orgExplicit = true;
+          // Split by line breaks, but keep pieces in the same visual line.
+          final s = seg.text;
+          int idx = 0;
+          final buf = StringBuffer();
+
+          void flushPiece() {
+            final text = buf.toString();
+            buf.clear();
+            if (text.isEmpty) return;
+            visualLines.last.add((
+              segmentIndex: si,
+              text: text,
+              style: state.copy(),
+              fax: fax,
+              fay: fay,
+              frx: frx,
+              fry: fry,
+              frz: frz,
+              xshad: xshad,
+              yshad: yshad,
+              p: p,
+              org: org,
+              orgExplicit: orgExplicit,
+            ));
           }
 
-          final vFax = _parseTagDouble(t, 'fax');
-          if (vFax != null) fax = vFax;
-          final vFay = _parseTagDouble(t, 'fay');
-          if (vFay != null) fay = vFay;
-          final vFrx = _parseTagDouble(t, 'frx');
-          if (vFrx != null) frx = vFrx;
-          final vFry = _parseTagDouble(t, 'fry');
-          if (vFry != null) fry = vFry;
-          final vFrz = _parseTagDouble(t, 'frz');
-          if (vFrz != null) frz = vFrz;
-
-          final vShad = _parseTagDouble(t, 'shad');
-          if (vShad != null) {
-            shad = vShad;
-            if (!xshadExplicit) xshad = shad;
-            if (!yshadExplicit) yshad = shad;
-          }
-          final vXshad = _parseTagDouble(t, 'xshad');
-          if (vXshad != null) {
-            xshad = vXshad;
-            xshadExplicit = true;
-          }
-          final vYshad = _parseTagDouble(t, 'yshad');
-          if (vYshad != null) {
-            yshad = vYshad;
-            yshadExplicit = true;
-          }
-
-          final vP = _parseTagInt(t, 'p');
-          if (vP != null) p = vP;
-        }
-
-        // Split by line breaks, but keep pieces in the same visual line.
-        final s = seg.text;
-        int idx = 0;
-        final buf = StringBuffer();
-
-        void flushPiece() {
-          final text = buf.toString();
-          buf.clear();
-          if (text.isEmpty) return;
-          visualLines.last.add((
-            segmentIndex: si,
-            text: text,
-            style: state.copy(),
-            fax: fax,
-            fay: fay,
-            frx: frx,
-            fry: fry,
-            frz: frz,
-            xshad: xshad,
-            yshad: yshad,
-            p: p,
-            org: org,
-            orgExplicit: orgExplicit,
-          ));
-        }
-
-        while (idx < s.length) {
-          final ch = s[idx];
-          if (ch == '\n') {
-            flushPiece();
-            startNewVisualLine();
-            idx++;
-            continue;
-          }
-          if (ch == '\\' && idx + 1 < s.length) {
-            final n = s[idx + 1];
-            if (n == 'N' || n == 'n') {
+          while (idx < s.length) {
+            final ch = s[idx];
+            if (ch == '\n') {
               flushPiece();
               startNewVisualLine();
-              idx += 2;
+              idx++;
               continue;
             }
+            if (ch == '\\' && idx + 1 < s.length) {
+              final n = s[idx + 1];
+              if (n == 'N' || n == 'n') {
+                flushPiece();
+                startNewVisualLine();
+                idx += 2;
+                continue;
+              }
+            }
+            buf.write(ch);
+            idx++;
           }
-          buf.write(ch);
-          idx++;
+          flushPiece();
         }
-        flushPiece();
-      }
 
-      // Measure baseline-aligned layout per visual line.
-      final lineWidths = List<double>.filled(visualLines.length, 0.0);
-      final lineAscents = List<double>.filled(visualLines.length, 0.0);
-      final lineDescents = List<double>.filled(visualLines.length, 0.0);
+        // Measure baseline-aligned layout per visual line.
+        final lineWidths = List<double>.filled(visualLines.length, 0.0);
+        final lineAscents = List<double>.filled(visualLines.length, 0.0);
+        final lineDescents = List<double>.filled(visualLines.length, 0.0);
 
-      final measuredLines = <List<({int segmentIndex, String text, double width, double ascent, double descent, AssFont font, double fax, double fay, double frx, double fry, double frz, double xshad, double yshad, int p, AssTagPosition org, bool orgExplicit, AssTextStyleState style})>>[];
+        final measuredLines =
+            <
+              List<
+                ({
+                  int segmentIndex,
+                  String text,
+                  double width,
+                  double ascent,
+                  double descent,
+                  AssFont font,
+                  double fax,
+                  double fay,
+                  double frx,
+                  double fry,
+                  double frz,
+                  double xshad,
+                  double yshad,
+                  int p,
+                  AssTagPosition org,
+                  bool orgExplicit,
+                  AssTextStyleState style,
+                })
+              >
+            >[];
 
-      for (int li = 0; li < visualLines.length; li++) {
-        final pieces = visualLines[li];
-        final measured = <({int segmentIndex, String text, double width, double ascent, double descent, AssFont font, double fax, double fay, double frx, double fry, double frz, double xshad, double yshad, int p, AssTagPosition org, bool orgExplicit, AssTextStyleState style})>[];
+        for (int li = 0; li < visualLines.length; li++) {
+          final pieces = visualLines[li];
+          final measured =
+              <
+                ({
+                  int segmentIndex,
+                  String text,
+                  double width,
+                  double ascent,
+                  double descent,
+                  AssFont font,
+                  double fax,
+                  double fay,
+                  double frx,
+                  double fry,
+                  double frz,
+                  double xshad,
+                  double yshad,
+                  int p,
+                  AssTagPosition org,
+                  bool orgExplicit,
+                  AssTextStyleState style,
+                })
+              >[];
 
-        if (pieces.isEmpty) {
-          // Blank visual line: keep height using current style metrics.
-          final st = visualLineStates[li];
-          final font = await ctx.shared.fontForTextState(styleName: d.styleName, state: st);
-          final m = font.metrics();
-          lineAscents[li] = math.max(lineAscents[li], m?.ascent ?? 0.0);
-          lineDescents[li] = math.max(lineDescents[li], m?.descent ?? 0.0);
+          if (pieces.isEmpty) {
+            // Blank visual line: keep height using current style metrics.
+            final st = visualLineStates[li];
+            final font = await ctx.shared.fontForTextState(
+              styleName: d.styleName,
+              state: st,
+            );
+            final m = font.metrics();
+            lineAscents[li] = math.max(lineAscents[li], m?.ascent ?? 0.0);
+            lineDescents[li] = math.max(lineDescents[li], m?.descent ?? 0.0);
+            measuredLines.add(measured);
+            continue;
+          }
+
+          for (final pz in pieces) {
+            final font = await ctx.shared.fontForTextState(
+              styleName: d.styleName,
+              state: pz.style,
+            );
+            final textAll = _normalizeTextForFx(pz.text.replaceAll(r'\h', ' '));
+            final extAll = font.textExtents(textAll);
+            final widthAll = extAll?.width ?? 0.0;
+
+            final m = font.metrics();
+            final ascent = m?.ascent ?? ((extAll?.height ?? 0.0) * 0.8);
+            final descent = m?.descent ?? ((extAll?.height ?? 0.0) - ascent);
+
+            measured.add((
+              segmentIndex: pz.segmentIndex,
+              text: textAll,
+              width: widthAll,
+              ascent: ascent,
+              descent: descent,
+              font: font,
+              fax: pz.fax,
+              fay: pz.fay,
+              frx: pz.frx,
+              fry: pz.fry,
+              frz: pz.frz,
+              xshad: pz.xshad,
+              yshad: pz.yshad,
+              p: pz.p,
+              org: pz.org,
+              orgExplicit: pz.orgExplicit,
+              style: pz.style,
+            ));
+
+            lineWidths[li] += widthAll;
+            lineAscents[li] = math.max(lineAscents[li], ascent);
+            lineDescents[li] = math.max(lineDescents[li], descent);
+          }
           measuredLines.add(measured);
-          continue;
         }
 
-        for (final pz in pieces) {
-          final font = await ctx.shared.fontForTextState(styleName: d.styleName, state: pz.style);
-          final textAll = _normalizeTextForFx(pz.text.replaceAll(r'\h', ' '));
-          final extAll = font.textExtents(textAll);
-          final widthAll = extAll?.width ?? 0.0;
-
-          final m = font.metrics();
-          final ascent = m?.ascent ?? ((extAll?.height ?? 0.0) * 0.8);
-          final descent = m?.descent ?? ((extAll?.height ?? 0.0) - ascent);
-
-          measured.add((
-            segmentIndex: pz.segmentIndex,
-            text: textAll,
-            width: widthAll,
-            ascent: ascent,
-            descent: descent,
-            font: font,
-            fax: pz.fax,
-            fay: pz.fay,
-            frx: pz.frx,
-            fry: pz.fry,
-            frz: pz.frz,
-            xshad: pz.xshad,
-            yshad: pz.yshad,
-            p: pz.p,
-            org: pz.org,
-            orgExplicit: pz.orgExplicit,
-            style: pz.style,
-          ));
-
-          lineWidths[li] += widthAll;
-          lineAscents[li] = math.max(lineAscents[li], ascent);
-          lineDescents[li] = math.max(lineDescents[li], descent);
+        final lineHeights = List<double>.generate(
+          measuredLines.length,
+          (li) => math.max(0.0, lineAscents[li] + lineDescents[li]),
+        );
+        double blockWidth = 0.0;
+        double blockHeight = 0.0;
+        for (int li = 0; li < measuredLines.length; li++) {
+          blockWidth = math.max(blockWidth, lineWidths[li]);
+          blockHeight += lineHeights[li];
         }
-        measuredLines.add(measured);
-      }
+        if (blockWidth <= 0 && blockHeight <= 0) return;
 
-      final lineHeights = List<double>.generate(
-        measuredLines.length,
-        (li) => math.max(0.0, lineAscents[li] + lineDescents[li]),
-      );
-      double blockWidth = 0.0;
-      double blockHeight = 0.0;
-      for (int li = 0; li < measuredLines.length; li++) {
-        blockWidth = math.max(blockWidth, lineWidths[li]);
-        blockHeight += lineHeights[li];
-      }
-      if (blockWidth <= 0 && blockHeight <= 0) continue;
-
-      final anchor = basePos.pos;
-      final blockLeft = switch (align) {
-        1 || 4 || 7 => anchor.x,
-        2 || 5 || 8 => anchor.x - (blockWidth * 0.5),
-        3 || 6 || 9 => anchor.x - blockWidth,
-        _ => anchor.x - (blockWidth * 0.5),
-      };
-      final blockTop = switch (align) {
-        7 || 8 || 9 => anchor.y,
-        4 || 5 || 6 => anchor.y - (blockHeight * 0.5),
-        1 || 2 || 3 => anchor.y - blockHeight,
-        _ => anchor.y - blockHeight,
-      };
-
-      final units = <AssShapeExpandUnit>[];
-      final out = <AssDialog>[];
-      final emitter = AssFxEmitter(out);
-
-      double yCursor = 0.0;
-      for (int li = 0; li < measuredLines.length; li++) {
-        final lineW = lineWidths[li];
-        final lineH = lineHeights[li];
-        final lineTop = blockTop + yCursor;
-        final baseline = lineTop + lineAscents[li];
-
-        final lineLeft = switch (align) {
-          1 || 4 || 7 => blockLeft,
-          2 || 5 || 8 => blockLeft + (blockWidth - lineW) * 0.5,
-          3 || 6 || 9 => blockLeft + (blockWidth - lineW),
-          _ => blockLeft,
+        final anchor = basePos.pos;
+        final blockLeft = switch (align) {
+          1 || 4 || 7 => anchor.x,
+          2 || 5 || 8 => anchor.x - (blockWidth * 0.5),
+          3 || 6 || 9 => anchor.x - blockWidth,
+          _ => anchor.x - (blockWidth * 0.5),
+        };
+        final blockTop = switch (align) {
+          7 || 8 || 9 => anchor.y,
+          4 || 5 || 6 => anchor.y - (blockHeight * 0.5),
+          1 || 2 || 3 => anchor.y - blockHeight,
+          _ => anchor.y - blockHeight,
         };
 
-        double xCursor = 0.0;
-        int layerInLine = 0;
+        final units = <AssShapeExpandUnit>[];
 
-        for (final mz in measuredLines[li]) {
-          final textPiece = mz.text;
-          final widthAll = mz.width;
+        double yCursor = 0.0;
+        for (int li = 0; li < measuredLines.length; li++) {
+          final lineW = lineWidths[li];
+          final lineH = lineHeights[li];
+          final lineTop = blockTop + yCursor;
 
-          if (textPiece.trim().isNotEmpty) {
-            // Important: do not "reallocate by bounding box" here, otherwise leading spaces
-            // (which affect layout) would be lost and the visual position would drift.
-            final paths = mz.font.getTextToAssPaths(textPiece);
-            if (paths != null) {
-              final pFactor = 1.0 / math.pow(2.0, (mz.p - 1).toDouble());
-              final sx = (mz.style.scaleX / 100.0) * pFactor;
-              final sy = (mz.style.scaleY / 100.0) * pFactor;
+          final lineLeft = switch (align) {
+            1 || 4 || 7 => blockLeft,
+            2 || 5 || 8 => blockLeft + (blockWidth - lineW) * 0.5,
+            3 || 6 || 9 => blockLeft + (blockWidth - lineW),
+            _ => blockLeft,
+          };
 
-              // Approximate unscaled height for asc logic.
-              final extCore = mz.font.textExtents(textPiece);
-              final effSy = sy == 0 ? 1.0 : sy;
-              final hScaled = extCore?.height ?? paths.boundingBox().height;
-              final h = hScaled / effSy;
+          double xCursor = 0.0;
+          int layerInLine = 0;
 
-              final posX = lineLeft + xCursor;
-              final posY = lineTop + (lineAscents[li] - mz.ascent);
-              final posPiece = AssTagPosition(posX, posY);
-              final orgPiece = mz.orgExplicit ? mz.org : posPiece;
+          for (final mz in measuredLines[li]) {
+            final textPiece = mz.text;
+            final widthAll = mz.width;
 
-              _expandAssPathsAppearance(
-                paths: paths,
-                an: 7,
-                pos: posPiece,
-                org: orgPiece,
-                fax: mz.fax,
-                fay: mz.fay,
-                frx: mz.frx,
-                fry: mz.fry,
-                frz: mz.frz,
-                scaleX: sx,
-                scaleY: sy,
-                xshad: mz.xshad,
-                yshad: mz.yshad,
-                heightUnscaled: h,
-              );
+            if (textPiece.trim().isNotEmpty) {
+              // Important: do not "reallocate by bounding box" here, otherwise leading spaces
+              // (which affect layout) would be lost and the visual position would drift.
+              final paths = mz.font.getTextToAssPaths(textPiece);
+              if (paths != null) {
+                final pFactor = 1.0 / math.pow(2.0, (mz.p - 1).toDouble());
+                final sx = (mz.style.scaleX / 100.0) * pFactor;
+                final sy = (mz.style.scaleY / 100.0) * pFactor;
 
-              final outTags = AssOverrideTags()
-                ..setAlignment(7)
-                ..setPos(posPiece)
-                ..addTag('p', 1)
-                ..addTag('bord', 0)
-                ..addTag('shad', 0);
+                // Approximate unscaled height for asc logic.
+                final extCore = mz.font.textExtents(textPiece);
+                final effSy = sy == 0 ? 1.0 : sy;
+                final hScaled = extCore?.height ?? paths.boundingBox().height;
+                final h = hScaled / effSy;
 
-              final fx = AssDialog(
-                layer: d.layer + layerOffset + layerInLine,
-                startTime: AssTime(time: start),
-                endTime: AssTime(time: end),
-                styleName: d.styleName,
-                name: d.name,
-                marginL: d.marginL,
-                marginR: d.marginR,
-                marginV: d.marginV,
-                effect: effect,
-                text: AssText(
-                  segments: [
-                    AssTextSegment(
-                      text: paths.toString(),
-                      overrideTags: outTags,
-                    ),
-                  ],
-                ),
-                header: d.header,
-                commented: false,
-                style: d.style,
-              );
+                final posX = lineLeft + xCursor;
+                final posY = lineTop + (lineAscents[li] - mz.ascent);
+                final posPiece = AssTagPosition(posX, posY);
+                final orgPiece = mz.orgExplicit ? mz.org : posPiece;
 
-              final u = AssShapeExpandUnit(
-                source: d,
-                sourceIndex: i,
-                segmentIndex: mz.segmentIndex,
-                segmentLineIndex: li,
-                absStartMs: start,
-                absEndMs: end,
-                an: 7,
-                pos: posPiece,
-                org: orgPiece,
-                text: textPiece,
-                paths: paths,
-                defaultDialog: fx,
-              );
+                _expandAssPathsAppearance(
+                  paths: paths,
+                  an: 7,
+                  pos: posPiece,
+                  org: orgPiece,
+                  fax: mz.fax,
+                  fay: mz.fay,
+                  frx: mz.frx,
+                  fry: mz.fry,
+                  frz: mz.frz,
+                  scaleX: sx,
+                  scaleY: sy,
+                  xshad: mz.xshad,
+                  yshad: mz.yshad,
+                  heightUnscaled: h,
+                );
 
-              units.add(u);
-              layerInLine++;
+                final outTags = AssOverrideTags()
+                  ..setAlignment(7)
+                  ..setPos(posPiece)
+                  ..addTag('p', 1)
+                  ..addTag('bord', 0)
+                  ..addTag('shad', 0);
+
+                final fx = AssDialog(
+                  layer: d.layer + layerOffset + layerInLine,
+                  startTime: AssTime(time: start),
+                  endTime: AssTime(time: end),
+                  styleName: d.styleName,
+                  name: d.name,
+                  marginL: d.marginL,
+                  marginR: d.marginR,
+                  marginV: d.marginV,
+                  effect: effect,
+                  text: AssText(
+                    segments: [
+                      AssTextSegment(
+                        text: paths.toString(),
+                        overrideTags: outTags,
+                      ),
+                    ],
+                  ),
+                  header: d.header,
+                  commented: false,
+                  style: d.style,
+                );
+
+                final u = AssShapeExpandUnit(
+                  source: d,
+                  sourceIndex: i,
+                  segmentIndex: mz.segmentIndex,
+                  segmentLineIndex: li,
+                  absStartMs: start,
+                  absEndMs: end,
+                  an: 7,
+                  pos: posPiece,
+                  org: orgPiece,
+                  text: textPiece,
+                  paths: paths,
+                  defaultDialog: fx,
+                );
+
+                units.add(u);
+                layerInLine++;
+              }
             }
+
+            xCursor += widthAll;
           }
 
-          xCursor += widthAll;
+          yCursor += lineH;
         }
 
-        yCursor += lineH;
-      }
+        if (units.isEmpty) return;
 
-      if (units.isEmpty) continue;
-
-      for (final u in units) {
-        if (onShapeExpandEnv != null) {
-          onShapeExpandEnv!(
-            AssShapeExpandTemplateEnv(
-              shared: ctx.shared,
-              basePos: basePos,
-              orgline: d,
-              sourceIndex: i,
-              units: units,
-              unit: u,
-              line: u.defaultDialog,
-              emit: emitter,
-            ),
-          );
-        } else {
-          emitter.emit(u.defaultDialog);
+        for (final u in units) {
+          if (onShapeExpandEnv != null) {
+            onShapeExpandEnv!(
+              AssShapeExpandTemplateEnv(
+                shared: ctx.shared,
+                basePos: basePos,
+                orgline: d,
+                sourceIndex: i,
+                units: units,
+                unit: u,
+                line: u.defaultDialog,
+                emit: emitter,
+              ),
+            );
+          } else {
+            emitter.emit(u.defaultDialog);
+          }
         }
-      }
-
-      if (out.isNotEmpty && commentOriginal) {
-        d.commented = true;
-        ctx.touchDialog(d);
-      }
-
-      if (out.isNotEmpty) {
-        if (afterSource) {
-          dialogs.insertAll(i + 1, out);
-        } else {
-          globalOut.addAll(out);
-        }
-        generatedTotal += out.length;
-        ctx.log('onShapeExpand: dialog#$i generated=${out.length}');
-      }
-    }
-
-    if (!afterSource && globalOut.isNotEmpty) {
-      switch (outputStrategy.placement) {
-        case AssGeneratedOutputPlacement.appendToEnd:
-          dialogs.addAll(globalOut);
-          break;
-        case AssGeneratedOutputPlacement.prependToStart:
-          dialogs.insertAll(0, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.insertAtIndex:
-          final idx = (outputStrategy.index ?? dialogs.length).clamp(0, dialogs.length);
-          dialogs.insertAll(idx, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.afterSource:
-          break;
-      }
-    }
-
-    ctx.log('onShapeExpand: totalGenerated=$generatedTotal');
+      },
+    );
   }
 }
 
@@ -4707,7 +4882,9 @@ class _AssRemoveFxOp extends AssAutomationOp {
 
     // Selection indices are now stale; clear to avoid accidental misuse.
     ctx.selection.clear();
-    ctx.log('removeFx: effect=$effect includeCommented=$includeCommented onlySelected=$onlySelected removed=$removed');
+    ctx.log(
+      'removeFx: effect=$effect includeCommented=$includeCommented onlySelected=$onlySelected removed=$removed',
+    );
   }
 }
 
@@ -4729,9 +4906,9 @@ class _AssDuplicateSelectedOp extends AssAutomationOp {
     if (times <= 0) return;
     final dialogs = ctx.ensureDialogs().dialogs;
 
-    final afterSource = outputStrategy.placement == AssGeneratedOutputPlacement.afterSource;
-    final indices = ctx.selection.toList()
-      ..sort((a, b) => afterSource ? b.compareTo(a) : a.compareTo(b));
+    final afterSource =
+        outputStrategy.placement == AssGeneratedOutputPlacement.afterSource;
+    final indices = _sortedSelectionIndices(ctx, afterSource: afterSource);
 
     final globalOut = <AssDialog>[];
     int generated = 0;
@@ -4741,20 +4918,11 @@ class _AssDuplicateSelectedOp extends AssAutomationOp {
       final d = dialogs[i];
       final out = <AssDialog>[];
       for (int k = 0; k < times; k++) {
-        final copy = AssDialog(
+        final copy = _cloneDialog(
+          d,
           layer: d.layer + layerOffset,
-          startTime: AssTime(time: (d.startTime.time ?? 0) + timeOffsetMs),
-          endTime: AssTime(time: (d.endTime.time ?? 0) + timeOffsetMs),
-          styleName: d.styleName,
-          name: d.name,
-          marginL: d.marginL,
-          marginR: d.marginR,
-          marginV: d.marginV,
-          effect: d.effect,
-          text: AssText.parse(d.text.getAss()) ?? d.text,
-          header: d.header,
-          commented: d.commented,
-          style: d.style,
+          startMs: (d.startTime.time ?? 0) + timeOffsetMs,
+          endMs: (d.endTime.time ?? 0) + timeOffsetMs,
         );
         out.add(copy);
       }
@@ -4767,24 +4935,16 @@ class _AssDuplicateSelectedOp extends AssAutomationOp {
       generated += out.length;
     }
 
-    if (!afterSource && globalOut.isNotEmpty) {
-      switch (outputStrategy.placement) {
-        case AssGeneratedOutputPlacement.appendToEnd:
-          dialogs.addAll(globalOut);
-          break;
-        case AssGeneratedOutputPlacement.prependToStart:
-          dialogs.insertAll(0, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.insertAtIndex:
-          final idx = (outputStrategy.index ?? dialogs.length).clamp(0, dialogs.length);
-          dialogs.insertAll(idx, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.afterSource:
-          break;
-      }
-    }
+    _applyOutputStrategy(
+      dialogs: dialogs,
+      afterSource: afterSource,
+      globalOut: globalOut,
+      outputStrategy: outputStrategy,
+    );
 
-    ctx.log('duplicateSelected: times=$times layerOffset=$layerOffset timeOffsetMs=$timeOffsetMs generated=$generated');
+    ctx.log(
+      'duplicateSelected: times=$times layerOffset=$layerOffset timeOffsetMs=$timeOffsetMs generated=$generated',
+    );
   }
 }
 
@@ -4802,9 +4962,9 @@ class _AssCopyToLayerOp extends AssAutomationOp {
   @override
   Future<void> apply(AssAutomationContext ctx) async {
     final dialogs = ctx.ensureDialogs().dialogs;
-    final afterSource = outputStrategy.placement == AssGeneratedOutputPlacement.afterSource;
-    final indices = ctx.selection.toList()
-      ..sort((a, b) => afterSource ? b.compareTo(a) : a.compareTo(b));
+    final afterSource =
+        outputStrategy.placement == AssGeneratedOutputPlacement.afterSource;
+    final indices = _sortedSelectionIndices(ctx, afterSource: afterSource);
 
     final globalOut = <AssDialog>[];
     int generated = 0;
@@ -4812,20 +4972,11 @@ class _AssCopyToLayerOp extends AssAutomationOp {
     for (final i in indices) {
       if (i < 0 || i >= dialogs.length) continue;
       final d = dialogs[i];
-      final copy = AssDialog(
+      final copy = _cloneDialog(
+        d,
         layer: layer,
-        startTime: AssTime(time: (d.startTime.time ?? 0) + timeOffsetMs),
-        endTime: AssTime(time: (d.endTime.time ?? 0) + timeOffsetMs),
-        styleName: d.styleName,
-        name: d.name,
-        marginL: d.marginL,
-        marginR: d.marginR,
-        marginV: d.marginV,
-        effect: d.effect,
-        text: AssText.parse(d.text.getAss()) ?? d.text,
-        header: d.header,
-        commented: d.commented,
-        style: d.style,
+        startMs: (d.startTime.time ?? 0) + timeOffsetMs,
+        endMs: (d.endTime.time ?? 0) + timeOffsetMs,
       );
 
       if (afterSource) {
@@ -4836,24 +4987,16 @@ class _AssCopyToLayerOp extends AssAutomationOp {
       generated++;
     }
 
-    if (!afterSource && globalOut.isNotEmpty) {
-      switch (outputStrategy.placement) {
-        case AssGeneratedOutputPlacement.appendToEnd:
-          dialogs.addAll(globalOut);
-          break;
-        case AssGeneratedOutputPlacement.prependToStart:
-          dialogs.insertAll(0, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.insertAtIndex:
-          final idx = (outputStrategy.index ?? dialogs.length).clamp(0, dialogs.length);
-          dialogs.insertAll(idx, globalOut);
-          break;
-        case AssGeneratedOutputPlacement.afterSource:
-          break;
-      }
-    }
+    _applyOutputStrategy(
+      dialogs: dialogs,
+      afterSource: afterSource,
+      globalOut: globalOut,
+      outputStrategy: outputStrategy,
+    );
 
-    ctx.log('copyToLayer: layer=$layer timeOffsetMs=$timeOffsetMs generated=$generated');
+    ctx.log(
+      'copyToLayer: layer=$layer timeOffsetMs=$timeOffsetMs generated=$generated',
+    );
   }
 }
 
@@ -4938,13 +5081,18 @@ class _AssEnsureLeadingTagsOp extends AssAutomationOp {
       if (i < 0 || i >= dialogs.length) continue;
       final d = dialogs[i];
       if (d.text.segments.isEmpty) {
-        d.text.segments.add(AssTextSegment(text: '', overrideTags: AssOverrideTags()));
+        d.text.segments.add(
+          AssTextSegment(text: '', overrideTags: AssOverrideTags()),
+        );
         touched++;
         ctx.touchDialog(d);
         continue;
       }
       if (d.text.segments.first.overrideTags == null) {
-        d.text.segments.insert(0, AssTextSegment(text: '', overrideTags: AssOverrideTags()));
+        d.text.segments.insert(
+          0,
+          AssTextSegment(text: '', overrideTags: AssOverrideTags()),
+        );
         touched++;
         ctx.touchDialog(d);
       }
@@ -4961,10 +5109,15 @@ abstract class _AssTagsScopeOp extends AssAutomationOp {
     switch (scope) {
       case AssTagScope.leading:
         if (text.segments.isEmpty) {
-          text.segments.add(AssTextSegment(text: '', overrideTags: AssOverrideTags()));
+          text.segments.add(
+            AssTextSegment(text: '', overrideTags: AssOverrideTags()),
+          );
         }
         if (text.segments.first.overrideTags == null) {
-          text.segments.insert(0, AssTextSegment(text: '', overrideTags: AssOverrideTags()));
+          text.segments.insert(
+            0,
+            AssTextSegment(text: '', overrideTags: AssOverrideTags()),
+          );
         }
         yield text.segments.first;
         return;
@@ -4993,10 +5146,15 @@ abstract class _AssTagEditOp extends AssAutomationOp {
     switch (scope) {
       case AssTagScope.leading:
         if (text.segments.isEmpty) {
-          text.segments.add(AssTextSegment(text: '', overrideTags: AssOverrideTags()));
+          text.segments.add(
+            AssTextSegment(text: '', overrideTags: AssOverrideTags()),
+          );
         }
         if (text.segments.first.overrideTags == null) {
-          text.segments.insert(0, AssTextSegment(text: '', overrideTags: AssOverrideTags()));
+          text.segments.insert(
+            0,
+            AssTextSegment(text: '', overrideTags: AssOverrideTags()),
+          );
         }
         yield text.segments.first;
         return;
@@ -5188,7 +5346,11 @@ class _AssRemoveMoveOp extends _AssTagsScopeOp {
 class _AssSetClipRectOp extends _AssTagsScopeOp {
   final AssTagClipRect clip;
   final bool inverse;
-  const _AssSetClipRectOp(this.clip, {required this.inverse, required super.scope});
+  const _AssSetClipRectOp(
+    this.clip, {
+    required this.inverse,
+    required super.scope,
+  });
 
   @override
   Future<void> apply(AssAutomationContext ctx) async {
@@ -5208,14 +5370,20 @@ class _AssSetClipRectOp extends _AssTagsScopeOp {
       touched++;
       ctx.touchDialog(d);
     }
-    ctx.log('setClipRect: inverse=$inverse clip=$clip scope=$scope touched=$touched');
+    ctx.log(
+      'setClipRect: inverse=$inverse clip=$clip scope=$scope touched=$touched',
+    );
   }
 }
 
 class _AssSetClipVectOp extends _AssTagsScopeOp {
   final AssTagClipVect clip;
   final bool inverse;
-  const _AssSetClipVectOp(this.clip, {required this.inverse, required super.scope});
+  const _AssSetClipVectOp(
+    this.clip, {
+    required this.inverse,
+    required super.scope,
+  });
 
   @override
   Future<void> apply(AssAutomationContext ctx) async {
@@ -5235,7 +5403,9 @@ class _AssSetClipVectOp extends _AssTagsScopeOp {
       touched++;
       ctx.touchDialog(d);
     }
-    ctx.log('setClipVect: inverse=$inverse clip=$clip scope=$scope touched=$touched');
+    ctx.log(
+      'setClipVect: inverse=$inverse clip=$clip scope=$scope touched=$touched',
+    );
   }
 }
 
@@ -5280,6 +5450,8 @@ class _AssSetFadOp extends _AssTagsScopeOp {
       touched++;
       ctx.touchDialog(d);
     }
-    ctx.log('setFad: tInMs=$tInMs tOutMs=$tOutMs scope=$scope touched=$touched');
+    ctx.log(
+      'setFad: tInMs=$tInMs tOutMs=$tOutMs scope=$scope touched=$touched',
+    );
   }
 }
