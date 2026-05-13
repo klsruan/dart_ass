@@ -34,6 +34,17 @@ void main() {
         expect(c.getAss(), equals('&HFFAACC&'));
         expect(c.toString(), equals('FFAACC'));
       });
+
+      test('AssColor serializes libass style colors as BBGGRR', () {
+        final c = AssColor(red: 0x11, green: 0x22, blue: 0x33);
+        expect(c.toString(), equals('112233'));
+        expect(c.toLibassStyleColor(), equals('332211'));
+
+        final parsed = AssColor.parseLibassStyleColor('&H00332211&');
+        expect(parsed.red, 0x11);
+        expect(parsed.green, 0x22);
+        expect(parsed.blue, 0x33);
+      });
     });
 
     group('ass_alpha.dart', () {
@@ -54,13 +65,22 @@ void main() {
     });
 
     group('ass_time.dart', () {
-      test('convertMillisecondsToAssTime/convertAssTimeToMilliseconds roundtrip', () {
-        expect(convertMillisecondsToAssTime(0), equals('0:00:00.00'));
-        expect(convertAssTimeToMilliseconds('0:00:00.00'), equals(0));
-        expect(convertAssTimeToMilliseconds('0:00:01.23'), equals(1230));
-        expect(() => convertMillisecondsToAssTime(-1), throwsA(isA<FormatException>()));
-        expect(() => convertAssTimeToMilliseconds('00:00:00.00'), throwsA(isA<FormatException>()));
-      });
+      test(
+        'convertMillisecondsToAssTime/convertAssTimeToMilliseconds roundtrip',
+        () {
+          expect(convertMillisecondsToAssTime(0), equals('0:00:00.00'));
+          expect(convertAssTimeToMilliseconds('0:00:00.00'), equals(0));
+          expect(convertAssTimeToMilliseconds('0:00:01.23'), equals(1230));
+          expect(
+            () => convertMillisecondsToAssTime(-1),
+            throwsA(isA<FormatException>()),
+          );
+          expect(
+            () => convertAssTimeToMilliseconds('00:00:00.00'),
+            throwsA(isA<FormatException>()),
+          );
+        },
+      );
 
       test('AssTime parse/zero/toString', () {
         expect(AssTime.zero().toString(), equals('0:00:00.00'));
@@ -90,8 +110,14 @@ void main() {
     group('ass_tags.dart', () {
       test('AssTag serializes with/without parentheses', () {
         expect(AssTag(tag: 'b', value: '1').toString(), equals(r'\b1'));
-        expect(AssTag(tag: 'fn', value: 'My Font').toString(), equals(r'\fn(My Font)'));
-        expect(AssTag(tag: 'clip', value: 'm 0 0 l 1 1').toString(), equals(r'\clip(m 0 0 l 1 1)'));
+        expect(
+          AssTag(tag: 'fn', value: 'My Font').toString(),
+          equals(r'\fn(My Font)'),
+        );
+        expect(
+          AssTag(tag: 'clip', value: 'm 0 0 l 1 1').toString(),
+          equals(r'\clip(m 0 0 l 1 1)'),
+        );
       });
 
       test('AssTagPosition parse/getAss', () {
@@ -136,21 +162,27 @@ void main() {
         expect(t.segments[2].text, '!');
       });
 
-      test('AssOverrideTags.parse supports \\fnFontName without parentheses', () {
-        final tags = AssOverrideTags.parse(r'{\fnC059\b1}');
-        expect(tags, isNotNull);
-        expect(tags!.getTagValue('fn'), equals('C059'));
-        expect(tags.fontName, equals('C059'));
-        expect(tags.bold, isTrue);
-      });
+      test(
+        'AssOverrideTags.parse supports \\fnFontName without parentheses',
+        () {
+          final tags = AssOverrideTags.parse(r'{\fnC059\b1}');
+          expect(tags, isNotNull);
+          expect(tags!.getTagValue('fn'), equals('C059'));
+          expect(tags.fontName, equals('C059'));
+          expect(tags.bold, isTrue);
+        },
+      );
 
-      test('AssOverrideTags.parse supports \\rStyleName without parentheses', () {
-        final tags = AssOverrideTags.parse(r'{\rAltStyle\fnC059\b1}');
-        expect(tags, isNotNull);
-        expect(tags!.getTagValue('r'), equals('AltStyle'));
-        expect(tags.getTagValue('fn'), equals('C059'));
-        expect(tags.bold, isTrue);
-      });
+      test(
+        'AssOverrideTags.parse supports \\rStyleName without parentheses',
+        () {
+          final tags = AssOverrideTags.parse(r'{\rAltStyle\fnC059\b1}');
+          expect(tags, isNotNull);
+          expect(tags!.getTagValue('r'), equals('AltStyle'));
+          expect(tags.getTagValue('fn'), equals('C059'));
+          expect(tags.bold, isTrue);
+        },
+      );
 
       test('AssOverrideTags.parse keeps karaoke + fn sequence intact', () {
         final tags = AssOverrideTags.parse(r'{\k36\fnC059\b1}');
@@ -169,7 +201,9 @@ void main() {
       });
 
       test('AssOverrideTags.parse getters/setters and serialization', () {
-        final tags = AssOverrideTags.parse(r'{\b1\i0\fs20\c&H00FFFFFF&\alpha&H80&\pos(10,20)}');
+        final tags = AssOverrideTags.parse(
+          r'{\b1\i0\fs20\c&H00FFFFFF&\alpha&H80&\pos(10,20)}',
+        );
         expect(tags, isNotNull);
         expect(tags!.bold, isTrue);
         expect(tags.italic, isFalse);
@@ -257,6 +291,7 @@ void main() {
         final styles = AssStyles(styles: [style]);
         expect(styles.getStyleByName('Default'), same(style));
         expect(styles.toString(), contains('[V4+ Styles]'));
+        expect(style.toString(), contains('&H00FF0000'));
 
         final dialog = AssDialog(
           layer: 0,
@@ -277,6 +312,66 @@ void main() {
         expect(dialogs.toString(), contains('[Events]'));
         await dialogs.extend(false);
         expect(dialog.line, isNotNull);
+      });
+
+      test('AssDialog.toString uses event styleName', () {
+        final header = AssHeader(
+          title: 'T',
+          wrapStyle: 0,
+          scaledBorderAndShadow: 'yes',
+          yCbCrMatrix: 'TV.709',
+          playResX: 1280,
+          playResY: 720,
+        );
+        final style = AssStyle(
+          styleName: 'ResolvedStyle',
+          fontName: 'Arial',
+          fontSize: 48,
+          color1: AssColor.parse('FFFFFF'),
+          color2: AssColor.parse('0000FF'),
+          color3: AssColor.parse('000000'),
+          color4: AssColor.parse('000000'),
+          alpha1: AssAlpha.parse('00'),
+          alpha2: AssAlpha.parse('00'),
+          alpha3: AssAlpha.parse('00'),
+          alpha4: AssAlpha.parse('00'),
+          bold: false,
+          italic: false,
+          underline: false,
+          strikeOut: false,
+          scaleX: 100,
+          scaleY: 100,
+          spacing: 0,
+          angle: 0,
+          borderStyle: 1,
+          outline: 2,
+          shadow: 1,
+          alignment: 2,
+          marginL: 10,
+          marginR: 10,
+          marginV: 10,
+          encoding: 1,
+        );
+        final dialog = AssDialog(
+          layer: 0,
+          startTime: AssTime(time: 0),
+          endTime: AssTime(time: 1000),
+          styleName: 'EventStyle',
+          name: '',
+          marginL: 10,
+          marginR: 10,
+          marginV: 10,
+          effect: '',
+          text: AssText(segments: [AssTextSegment(text: 'hello')]),
+          header: header,
+          commented: false,
+          style: style,
+        );
+
+        expect(
+          dialog.toString(),
+          startsWith('Dialogue: 0,0:00:00.00,0:00:01.00,EventStyle,'),
+        );
       });
     });
 
@@ -311,12 +406,9 @@ void main() {
         expect(d0.text.segments.first.overrideTags!.borderSize, 3);
 
         // Remove o segundo dialog.
-        final res2 = await AssAutomation(ass)
-            .flow()
-            .selectAll()
-            .where((_, i) => i == 1)
-            .removeSelected()
-            .run();
+        final res2 = await AssAutomation(
+          ass,
+        ).flow().selectAll().where((_, i) => i == 1).removeSelected().run();
 
         expect(res2.dialogsTouched, 0); // remove não conta como "touched"
         expect(ass.dialogs!.dialogs.length, 1);
@@ -324,12 +416,7 @@ void main() {
 
       test('splitCharsFx supports callback emission', () async {
         final ass = convertSrtToAss(
-          [
-            '1',
-            '00:00:01,000 --> 00:00:02,000',
-            'Hi',
-            '',
-          ].join('\n'),
+          ['1', '00:00:01,000 --> 00:00:02,000', 'Hi', ''].join('\n'),
         );
 
         final res = await AssAutomation(ass)
@@ -356,126 +443,27 @@ void main() {
         expect(ass.dialogs!.dialogs[1].text.getAss(), contains(r'\bord2'));
       });
 
-      test('splitKaraokeFx does not comment non-karaoke lines by default', () async {
-        final ass = convertSrtToAss(
-          [
-            '1',
-            '00:00:01,000 --> 00:00:02,000',
-            'Hello',
-            '',
-          ].join('\n'),
-        );
+      test(
+        'splitKaraokeFx does not comment non-karaoke lines by default',
+        () async {
+          final ass = convertSrtToAss(
+            ['1', '00:00:01,000 --> 00:00:02,000', 'Hello', ''].join('\n'),
+          );
 
-        final res = await AssAutomation(ass)
-            .flow()
-            .selectAll()
-            .splitKaraokeFx(commentOriginal: true)
-            .run();
+          final res = await AssAutomation(
+            ass,
+          ).flow().selectAll().splitKaraokeFx(commentOriginal: true).run();
 
-        expect(res.dialogsTouched, 0);
-        expect(ass.dialogs!.dialogs.length, 1);
-        expect(ass.dialogs!.dialogs[0].commented, isFalse);
-      });
+          expect(res.dialogsTouched, 0);
+          expect(ass.dialogs!.dialogs.length, 1);
+          expect(ass.dialogs!.dialogs[0].commented, isFalse);
+        },
+      );
 
-      test('splitKaraokeFx callback receives optional metrics when dialog.line is set', () async {
-        final header = AssHeader(
-          title: 'T',
-          wrapStyle: 0,
-          scaledBorderAndShadow: 'yes',
-          yCbCrMatrix: 'TV.709',
-          playResX: 1920,
-          playResY: 1080,
-        );
-        final style = AssStyle(
-          styleName: 'Default',
-          fontName: 'Arial',
-          fontSize: 48,
-          color1: AssColor.parse('FFFFFF'),
-          color2: AssColor.parse('0000FF'),
-          color3: AssColor.parse('000000'),
-          color4: AssColor.parse('000000'),
-          alpha1: AssAlpha.parse('00'),
-          alpha2: AssAlpha.parse('00'),
-          alpha3: AssAlpha.parse('00'),
-          alpha4: AssAlpha.parse('00'),
-          bold: false,
-          italic: false,
-          underline: false,
-          strikeOut: false,
-          scaleX: 100,
-          scaleY: 100,
-          spacing: 0,
-          angle: 0,
-          borderStyle: 1,
-          outline: 2,
-          shadow: 1,
-          alignment: 2,
-          marginL: 10,
-          marginR: 10,
-          marginV: 10,
-          encoding: 1,
-        );
-
-        final t = AssText.parse(r'{\k10}A{\k20}B')!;
-        final dialog = AssDialog(
-          layer: 0,
-          startTime: AssTime(time: 0),
-          endTime: AssTime(time: 1000),
-          styleName: style.styleName,
-          name: '',
-          marginL: 10,
-          marginR: 10,
-          marginV: 10,
-          effect: 'karaoke',
-          text: t,
-          header: header,
-          commented: false,
-          style: style,
-        );
-
-        // Provide "fake" segment metrics.
-        final line = AssLine.parse(t, style)!;
-        line.segments[0].width = 10;
-        line.segments[0].height = 5;
-        line.segments[1].width = 20;
-        line.segments[1].height = 5;
-        dialog.line = line;
-
-        final ass = Ass(filePath: '');
-        ass.header = header;
-        ass.styles = AssStyles(styles: [style]);
-        ass.dialogs = AssDialogs(dialogs: [dialog]);
-
-        int seen = 0;
-        await AssAutomation(ass)
-            .flow()
-            .selectAll()
-            .splitKaraokeFx(
-              commentOriginal: false,
-              onKaraokeEnv: (env) {
-                final unit = env.unit;
-                expect(unit.width, isNotNull);
-                expect(unit.x, isNotNull);
-                if (unit.blockIndex == 0) {
-                  expect(unit.width, 10);
-                  expect(unit.x, 0);
-                }
-                if (unit.blockIndex == 1) {
-                  expect(unit.width, 20);
-                  expect(unit.x, 10);
-                }
-                seen++;
-                env.emit.emit(unit.defaultDialog);
-              },
-            )
-            .run();
-
-        expect(seen, 2);
-      });
-    });
-
-    group('ass_line.dart (FX helpers)', () {
-      AssHeader _header() => AssHeader(
+      test(
+        'splitKaraokeFx callback receives optional metrics when dialog.line is set',
+        () async {
+          final header = AssHeader(
             title: 'T',
             wrapStyle: 0,
             scaledBorderAndShadow: 'yes',
@@ -483,8 +471,7 @@ void main() {
             playResX: 1920,
             playResY: 1080,
           );
-
-      AssStyle _style() => AssStyle(
+          final style = AssStyle(
             styleName: 'Default',
             fontName: 'Arial',
             fontSize: 48,
@@ -514,6 +501,105 @@ void main() {
             encoding: 1,
           );
 
+          final t = AssText.parse(r'{\k10}A{\k20}B')!;
+          final dialog = AssDialog(
+            layer: 0,
+            startTime: AssTime(time: 0),
+            endTime: AssTime(time: 1000),
+            styleName: style.styleName,
+            name: '',
+            marginL: 10,
+            marginR: 10,
+            marginV: 10,
+            effect: 'karaoke',
+            text: t,
+            header: header,
+            commented: false,
+            style: style,
+          );
+
+          // Provide "fake" segment metrics.
+          final line = AssLine.parse(t, style)!;
+          line.segments[0].width = 10;
+          line.segments[0].height = 5;
+          line.segments[1].width = 20;
+          line.segments[1].height = 5;
+          dialog.line = line;
+
+          final ass = Ass(filePath: '');
+          ass.header = header;
+          ass.styles = AssStyles(styles: [style]);
+          ass.dialogs = AssDialogs(dialogs: [dialog]);
+
+          int seen = 0;
+          await AssAutomation(ass)
+              .flow()
+              .selectAll()
+              .splitKaraokeFx(
+                commentOriginal: false,
+                onKaraokeEnv: (env) {
+                  final unit = env.unit;
+                  expect(unit.width, isNotNull);
+                  expect(unit.x, isNotNull);
+                  if (unit.blockIndex == 0) {
+                    expect(unit.width, 10);
+                    expect(unit.x, 0);
+                  }
+                  if (unit.blockIndex == 1) {
+                    expect(unit.width, 20);
+                    expect(unit.x, 10);
+                  }
+                  seen++;
+                  env.emit.emit(unit.defaultDialog);
+                },
+              )
+              .run();
+
+          expect(seen, 2);
+        },
+      );
+    });
+
+    group('ass_line.dart (FX helpers)', () {
+      AssHeader _header() => AssHeader(
+        title: 'T',
+        wrapStyle: 0,
+        scaledBorderAndShadow: 'yes',
+        yCbCrMatrix: 'TV.709',
+        playResX: 1920,
+        playResY: 1080,
+      );
+
+      AssStyle _style() => AssStyle(
+        styleName: 'Default',
+        fontName: 'Arial',
+        fontSize: 48,
+        color1: AssColor.parse('FFFFFF'),
+        color2: AssColor.parse('0000FF'),
+        color3: AssColor.parse('000000'),
+        color4: AssColor.parse('000000'),
+        alpha1: AssAlpha.parse('00'),
+        alpha2: AssAlpha.parse('00'),
+        alpha3: AssAlpha.parse('00'),
+        alpha4: AssAlpha.parse('00'),
+        bold: false,
+        italic: false,
+        underline: false,
+        strikeOut: false,
+        scaleX: 100,
+        scaleY: 100,
+        spacing: 0,
+        angle: 0,
+        borderStyle: 1,
+        outline: 2,
+        shadow: 1,
+        alignment: 2,
+        marginL: 10,
+        marginR: 10,
+        marginV: 10,
+        encoding: 1,
+      );
+
       test('AssDialog.toCharFxDialogs generates one line per char', () {
         final header = _header();
         final style = _style();
@@ -533,7 +619,11 @@ void main() {
           style: style,
         );
 
-        final fx = dialog.toCharFxDialogs(stepMs: 50, durMs: 200, commentOriginal: true);
+        final fx = dialog.toCharFxDialogs(
+          stepMs: 50,
+          durMs: 200,
+          commentOriginal: true,
+        );
         expect(dialog.commented, isTrue);
         expect(fx.length, 2);
         expect(fx[0].startTime.time, 0);
@@ -591,7 +681,12 @@ void main() {
           '',
         ].join('\n');
 
-        final ass = convertSrtToAss(srt, title: 'X', fontName: 'Arial', fontSize: 20);
+        final ass = convertSrtToAss(
+          srt,
+          title: 'X',
+          fontName: 'Arial',
+          fontSize: 20,
+        );
         expect(ass.header?.title, 'X');
         expect(ass.styles?.styles, isNotEmpty);
         expect(ass.dialogs?.dialogs.length, 2);
@@ -626,7 +721,7 @@ Active Line: 3
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1
+Style: Default,Arial,48,&H000000FF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -639,13 +734,18 @@ Dialogue: 0,0:00:00.00,0:00:01.00,Default,,10,10,10,,Hello
         expect(ass.header!.title, 'Example');
         expect(ass.garbage?.audioFilePath, 'audio.wav');
         expect(ass.styles?.styles.length, 1);
+        expect(ass.styles!.styles.first.color1.red, 0xFF);
+        expect(ass.toString(), contains('&H000000FF'));
         expect(ass.dialogs?.dialogs.length, 1);
         expect(ass.toString(), contains('[Script Info]'));
 
         final out = '${dir.path}/out.ass';
         await ass.toFile(out);
         expect(File(out).existsSync(), isTrue);
-        expect(File(out).readAsStringSync(), contains('; Script generated by Dart ASS'));
+        expect(
+          File(out).readAsStringSync(),
+          contains('; Script generated by Dart ASS'),
+        );
       });
 
       test('Ass.parse throws for missing file', () async {
@@ -655,13 +755,16 @@ Dialogue: 0,0:00:00.00,0:00:01.00,Default,,10,10,10,,Hello
     });
 
     group('font_collector.dart', () {
-      test('FontCollector.getFontsData returns list on supported platforms', () async {
-        if (!(Platform.isWindows || Platform.isLinux || Platform.isAndroid)) {
-          return;
-        }
-        final fonts = await FontCollector.getFontsData();
-        expect(fonts, isA<List<SystemFont>>());
-      });
+      test(
+        'FontCollector.getFontsData returns list on supported platforms',
+        () async {
+          if (!(Platform.isWindows || Platform.isLinux || Platform.isAndroid)) {
+            return;
+          }
+          final fonts = await FontCollector.getFontsData();
+          expect(fonts, isA<List<SystemFont>>());
+        },
+      );
     });
 
     group('ass_font.dart (non-FFI paths)', () {
@@ -704,7 +807,10 @@ Dialogue: 0,0:00:00.00,0:00:01.00,Default,,10,10,10,,Hello
         logFont.ref.lfFaceName[0] = 'O'.codeUnitAt(0);
         logFont.ref.lfFaceName[1] = 'K'.codeUnitAt(0);
         logFont.ref.lfFaceName[2] = 0;
-        expect(win.utf16ArrayToString(logFont.ref.lfFaceName, 32), equals('OK'));
+        expect(
+          win.utf16ArrayToString(logFont.ref.lfFaceName, 32),
+          equals('OK'),
+        );
       });
     });
   });

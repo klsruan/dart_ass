@@ -86,10 +86,26 @@ class Ass {
 
         switch (currentSection) {
           case 'Script Info':
-            _parseScriptInfo(line, titleExp, wrapStyleExp, scaledBorderExp, yCbCrMatrixExp, playResXExp, playResYExp);
+            _parseScriptInfo(
+              line,
+              titleExp,
+              wrapStyleExp,
+              scaledBorderExp,
+              yCbCrMatrixExp,
+              playResXExp,
+              playResYExp,
+            );
             break;
           case 'Dart Ass Project Garbage':
-            _parseGarbage(line, audioFileExp, videoFileExp, videoARValueExp, videoZoomPercentExp, videoZoomPositionExp, activeLineExp);
+            _parseGarbage(
+              line,
+              audioFileExp,
+              videoFileExp,
+              videoARValueExp,
+              videoZoomPercentExp,
+              videoZoomPositionExp,
+              activeLineExp,
+            );
             break;
           case 'V4+ Styles':
             if (!stylesHeaderParsed) {
@@ -130,7 +146,9 @@ class Ass {
         print('Warning: [Script Info] section not found or incomplete.');
       }
       if (garbage == null) {
-        print('Warning: [Dart Ass Project Garbage] section not found or incomplete.');
+        print(
+          'Warning: [Dart Ass Project Garbage] section not found or incomplete.',
+        );
       }
       if (stylesList.isNotEmpty) {
         styles = AssStyles(styles: stylesList);
@@ -251,10 +269,10 @@ class Ass {
         styleName: parts[0].trim(),
         fontName: parts[1].trim(),
         fontSize: double.parse(parts[2].trim()),
-        color1: AssColor.parse(parts[3].trim().substring(2)),
-        color2: AssColor.parse(parts[4].trim().substring(2)),
-        color3: AssColor.parse(parts[5].trim().substring(2)),
-        color4: AssColor.parse(parts[6].trim().substring(2)),
+        color1: AssColor.parseLibassStyleColor(parts[3].trim()),
+        color2: AssColor.parseLibassStyleColor(parts[4].trim()),
+        color3: AssColor.parseLibassStyleColor(parts[5].trim()),
+        color4: AssColor.parseLibassStyleColor(parts[6].trim()),
         alpha1: AssAlpha.parse(parts[3].trim().substring(2)),
         alpha2: AssAlpha.parse(parts[4].trim().substring(2)),
         alpha3: AssAlpha.parse(parts[5].trim().substring(2)),

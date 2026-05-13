@@ -88,7 +88,6 @@ class AssGarbage {
   }
 }
 
-
 class AssStyle {
   /// A single V4+ style entry.
   String styleName;
@@ -151,10 +150,10 @@ class AssStyle {
 
   @override
   String toString() {
-    String c1 = '&H${alpha1.toString() + color1.toString()}';
-    String c2 = '&H${alpha2.toString() + color2.toString()}';
-    String c3 = '&H${alpha3.toString() + color3.toString()}';
-    String c4 = '&H${alpha4.toString() + color4.toString()}';
+    String c1 = '&H${alpha1.toString() + color1.toLibassStyleColor()}';
+    String c2 = '&H${alpha2.toString() + color2.toLibassStyleColor()}';
+    String c3 = '&H${alpha3.toString() + color3.toLibassStyleColor()}';
+    String c4 = '&H${alpha4.toString() + color4.toLibassStyleColor()}';
     return "Style: $styleName,$fontName,${fontSize.round()},$c1,$c2,$c3,$c4,${bold ? '1' : '0'},${italic ? '1' : '0'},${underline ? '1' : '0'},${strikeOut ? '1' : '0'},${scaleX.round()},${scaleY.round()},${spacing.round()},${angle.round()},$borderStyle,${outline.round()},${shadow.round()},$alignment,${marginL.round()},${marginR.round()},${marginV.round()},$encoding";
   }
 }
@@ -174,7 +173,8 @@ class AssStyles {
     StringBuffer bff = StringBuffer();
     bff.writeln("[V4+ Styles]");
     bff.writeln(
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
+      "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    );
     for (var style in styles) {
       bff.writeln(style.toString());
     }
@@ -212,7 +212,7 @@ class AssDialog {
     required this.text,
     required this.header,
     required this.commented,
-    required this.style
+    required this.style,
   });
 
   Future extend(bool useTextData) async {
@@ -224,7 +224,7 @@ class AssDialog {
 
   @override
   String toString() {
-    return "${commented ? 'Comment' : 'Dialogue'}: $layer,${startTime.toString()},${endTime.toString()},${style.styleName},$name,${marginL.round()},${marginR.round()},${marginV.round()},$effect,$text";
+    return "${commented ? 'Comment' : 'Dialogue'}: $layer,${startTime.toString()},${endTime.toString()},$styleName,$name,${marginL.round()},${marginR.round()},${marginV.round()},$effect,$text";
   }
 }
 
@@ -244,7 +244,9 @@ class AssDialogs {
   String toString() {
     StringBuffer bff = StringBuffer();
     bff.writeln("[Events]");
-    bff.writeln("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
+    bff.writeln(
+      "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    );
     for (var dialog in dialogs) {
       bff.writeln(dialog.toString());
     }

@@ -1,9 +1,7 @@
 import 'ass_struct.dart';
 import 'ass_text.dart';
 import 'ass_font.dart';
-import 'ass_tags.dart';
 import 'ass_time.dart';
-import 'dart:math' as math;
 
 /// Text-processing helpers for ASS dialogue lines.
 ///
